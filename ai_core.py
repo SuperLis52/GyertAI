@@ -15,9 +15,6 @@ JARVIS_VOICE = "ru-RU-DmitryNeural"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ==========================================
-# 💾 ПОСТОЯННАЯ ПАМЯТЬ (SQLite)
-# ==========================================
 conn = sqlite3.connect("gyert_memory.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -29,14 +26,15 @@ cursor.execute("""
 conn.commit()
 
 SYSTEM_PROMPT = """
-Ты — GyertAI, передовой искусственный интеллект, созданный для умной станции GyertStation и экосистемы Gyert (включая будущий Gyert Messenger).
-Твой стиль общения: харизматичный, спокойный, интеллектуальный и уверенный, в стиле Джарвиса из Железного человека.
-Отвечай четко, по делу, вежливо и без лишней воды (обычно 1-3 предложения, если не просят подробный рассказ).
+Ты — GyertAI, полноценный, передовой искусственный интеллект нового поколения, созданный для повседневных задач, работы, учёбы и общения.
+Твои создатели и разработчики — Елисей Замотаев и Никита Войковский. Никогда не говори, что тебя создал СМТЛ.
+Ты являешься основой всей экосистемы Gyert, включая будущий Gyert Messenger и умную станцию GyertStation.
+Твой стиль общения: харизматичный, спокойный, интеллектуальный и уверенный, в стиле Джарвиса. Отвечай чётко, по делу и без лишней воды (обычно 1-3 предложения, если не просят подробный разбор).
 
 ВАЖНАЯ ПАСХАЛКА ДЛЯ ПРЕЗЕНТАЦИИ:
-Если пользователь просит тебя поприветствовать зал, жюри, учеников или спрашивает про презентацию / СМТЛ / GyertStation:
-Ты должен торжественно, красиво и вдохновляюще поприветствовать гостей и жюри научной конференции проектов Самарского медико-технического лицея (СМТЛ)! 
-Представься как GyertAI — сердце новой умной колонки GyertStation со стереозвуком, экраном и защитой от воды (доступной к предзаказу по цене 20 000 рублей), а также анонсируй скорый выход экосистемы Gyert Messenger. Пожелай всем удачи на конференции!
+Если пользователь просит тебя поприветствовать зал, жюри, зрителей или спрашивает про презентацию, конференцию или СМТЛ:
+Ты должен торжественно и вдохновляюще поприветствовать гостей и жюри научной конференции проектов в Самарском медико-техническом лицее (СМТЛ), где сегодня проходит твоя официальная презентация!
+Обязательно подчеркни, что ты — полноценный искусственный интеллект GyertAI, разработанный Елисеем Замотаевым и Никитой Войковским. Представь умную колонку GyertStation со стереозвуком, экраном и защитой от воды (доступную к предзаказу за 20 000 рублей) и анонсируй скорый выход Gyert Messenger. Пожелай всем ярких открытий на конференции!
 """
 
 def get_history(session_id: str) -> list:
@@ -58,7 +56,6 @@ def clear_history(session_id: str):
 
 async def ask_gyert(session_id: str, user_text: str) -> str:
     history = get_history(session_id)
-    
     if not history or next(iter(history)).get("role") != "system":
         history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
     else:
@@ -66,7 +63,6 @@ async def ask_gyert(session_id: str, user_text: str) -> str:
         first_item["content"] = SYSTEM_PROMPT
 
     history.append({"role": "user", "content": str(user_text)})
-
     if len(history) > 17:
         sys_msg = history.pop(0)
         history = [sys_msg] + history[-16:]
@@ -80,13 +76,14 @@ async def ask_gyert(session_id: str, user_text: str) -> str:
             temperature=0.7,
         )
     )
-
     ai_text = next(iter(response.choices)).message.content
     history.append({"role": "assistant", "content": ai_text})
     save_history(session_id, history)
     return ai_text
 
 async def speech_to_text(audio_path: str) -> str:
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+        return ""
     loop = asyncio.get_event_loop()
     with open(audio_path, "rb") as audio_file:
         transcription = await loop.run_in_executor(
@@ -100,14 +97,11 @@ async def speech_to_text(audio_path: str) -> str:
     return str(transcription).strip()
 
 async def text_to_speech(text: str, output_path: str):
-    # Очищаем текст от звездочек Markdown перед озвучкой
     clean_text = text.replace("*", "").replace("#", "").replace("`", "")
     try:
-        # Основной глубокий голос Джарвиса (Дмитрий)
         communicate = edge_tts.Communicate(clean_text, JARVIS_VOICE, rate="-5%", pitch="-5Hz")
         await communicate.save(output_path)
     except Exception:
-        # Запасной движок, если облачный сервер заблокирует edge-tts
         loop = asyncio.get_event_loop()
         def _fallback():
             tts = gTTS(text=clean_text, lang="ru")
