@@ -320,7 +320,13 @@ HTML_TEMPLATE = """
     const audioPlayer = document.getElementById('audio-player');
     const textInput = document.getElementById('text-input');
 
-    const sessionId = "web_" + Math.random().toString(36).substring(7);
+    // Идентификатор хранится в браузере: иначе перезагрузка страницы сбрасывала бы
+    // дневной лимит запросов для тех, у кого нет аккаунта.
+    let sessionId = localStorage.getItem('gyert_sid');
+    if (!sessionId) {
+        sessionId = "web_" + Math.random().toString(36).substring(7);
+        localStorage.setItem('gyert_sid', sessionId);
+    }
     let mediaRecorder, audioChunks = [], isRecording = false, typingRow = null;
     let mediaStream = null, isBusy = false;
 
