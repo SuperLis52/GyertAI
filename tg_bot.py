@@ -6,7 +6,10 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
-from ai_core import ask_gyert, speech_to_text, text_to_speech, clear_history
+from ai_core import (
+    ask_gyert, speech_to_text, text_to_speech, clear_history,
+    is_conference_trigger, CONFERENCE_FULL_TEXT, CONFERENCE_SPEECH_AUDIO
+)
 
 load_dotenv()
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -17,15 +20,13 @@ dp = Dispatcher()
 def get_main_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🧹 Очистить память", callback_data="clear_mem")
-    builder.button(text="🎤 Речь для СМТЛ", callback_data="smtl_speech")
-    builder.adjust(2)
     return builder.as_markup()
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
-        "👋 Приветствую! Я **GyertAI** — интеллектуальное ядро экосистемы Gyert и умной станции **GyertStation**.\n\n"
-        "Пиши мне любые задачи или отправляй голосовые сообщения — я отвечу голосом в стиле Джарвиса!",
+        "👋 Приветствую! Я **GyertAI** — полноценный искусственный интеллект нового поколения.\n\n"
+        "Задавайте любые вопросы текстом или отправляйте голосовые сообщения — я отвечу вам.",
         parse_mode="Markdown",
         reply_markup=get_main_keyboard()
     )
@@ -36,30 +37,31 @@ async def cb_clear(callback: types.CallbackQuery):
     await callback.answer("Память диалога очищена!")
     await callback.message.answer("🧹 Память сброшена. Готов к новым задачам!")
 
-@dp.callback_query(F.data == "smtl_speech")
-async def cb_smtl(callback: types.CallbackQuery):
-    await callback.answer("Запускаю протокол презентации...")
-    chat_id = callback.message.chat.id
-    await bot.send_chat_action(chat_id=chat_id, action="record_voice")
-    
-    reply = await ask_gyert(f"tg_{chat_id}", "Поприветствуй зал и жюри научной конференции СМТЛ!")
-    await callback.message.answer(f"🤖 *GyertAI:* {reply}", parse_mode="Markdown")
-    
-    os.makedirs("temp_audio", exist_ok=True)
-    out_mp3 = os.path.join("temp_audio", f"tg_smtl_{uuid.uuid4()}.mp3")
-    try:
-        await text_to_speech(reply, out_mp3)
-        await callback.message.answer_audio(types.FSInputFile(out_mp3), title="GyertStation Presentation")
-    finally:
-        if os.path.exists(out_mp3):
-            os.remove(out_mp3)
-
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     chat_id = message.chat.id
+    user_text = message.text
+
+    # Строгая проверка точной фразы для конференции СМТЛ
+    if is_conference_trigger(user_text):
+        await bot.send_chat_action(chat_id=chat_id, action="record_voice")
+        await message.answer(CONFERENCE_FULL_TEXT)
+        
+        os.makedirs("temp_audio", exist_ok=True)
+        out_mp3 = os.path.join("temp_audio", f"conf_{uuid.uuid4()}.mp3")
+        try:
+            # Озвучиваем строго речь без юридической приписки
+            await text_to_speech(CONFERENCE_SPEECH_AUDIO, out_mp3)
+            await message.answer_audio(types.FSInputFile(out_mp3), title="GyertAI — Приветствие")
+        finally:
+            if os.path.exists(out_mp3):
+                os.remove(out_mp3)
+        return
+
+    # Обычный режим работы ИИ во всех остальных случаях
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        reply = await ask_gyert(f"tg_{chat_id}", message.text)
+        reply = await ask_gyert(f"tg_{chat_id}", user_text)
         await message.answer(reply, reply_markup=get_main_keyboard())
     except Exception as e:
         await message.answer(f"⚠️ Ошибка ядра: {e}")
@@ -75,9 +77,16 @@ async def handle_voice(message: types.Message):
     try:
         await bot.download(file=message.voice.file_id, destination=in_ogg)
         user_text = await speech_to_text(in_ogg)
-        reply = await ask_gyert(f"tg_{chat_id}", user_text)
         
-        await message.answer(f"🤖 *GyertAI:* {reply}", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        if is_conference_trigger(user_text):
+            await message.answer(CONFERENCE_FULL_TEXT)
+            await bot.send_chat_action(chat_id=chat_id, action="record_voice")
+            await text_to_speech(CONFERENCE_SPEECH_AUDIO, out_mp3)
+            await message.answer_audio(types.FSInputFile(out_mp3), title="GyertAI — Приветствие")
+            return
+
+        reply = await ask_gyert(f"tg_{chat_id}", user_text)
+        await message.answer(reply, reply_markup=get_main_keyboard())
         
         await bot.send_chat_action(chat_id=chat_id, action="record_voice")
         await text_to_speech(reply, out_mp3)
@@ -104,7 +113,7 @@ async def start_web_server():
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(start_web_server())
-    print("🤖 Telegram-бот GyertAI успешно запущен!")
+    print("🤖 Telegram-бот GyertAI обновлён и запущен!")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
