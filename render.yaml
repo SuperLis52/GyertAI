@@ -11,3 +11,11 @@ services:
         sync: false
       - key: BOT_TOKEN
         sync: false
+      - key: VERIFY_BOT_TOKEN
+        sync: false
+      - key: XROCKET_API_TOKEN
+        sync: false
+      - key: XROCKET_WEBHOOK_SECRET
+        sync: false
+      - key: PUBLIC_BASE_URL
+        value: https://gyertai.onrender.com

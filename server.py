@@ -3,6 +3,7 @@ import asyncio
 import uvicorn
 from web_app import app
 from tg_bot import bot, dp
+from verify_bot import start_verify_bot
 
 async def run_all():
     port = int(os.environ.get("PORT", 8000))
@@ -14,7 +15,8 @@ async def run_all():
     
     await asyncio.gather(
         server.serve(),
-        dp.start_polling(bot, skip_updates=True)
+        dp.start_polling(bot, skip_updates=True),
+        start_verify_bot()
     )
 
 if __name__ == "__main__":
