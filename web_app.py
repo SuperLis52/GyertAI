@@ -4,7 +4,7 @@ import asyncio
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from ai_core import ask_gyert, speech_to_text, text_to_speech, clear_history
+from ai_core import ask_gyert, ask_gyert_rich, image_url, speech_to_text, text_to_speech, clear_history
 import accounts
 
 app = FastAPI(title="GyertAI — Web & Station OS")
@@ -133,6 +133,12 @@ HTML_TEMPLATE = """
         background: linear-gradient(135deg, #0ea5e9, #0369a1); color: #f0f9ff;
         border-bottom-right-radius: 5px;
     }
+    .bubble img { display: block; margin-top: 12px; max-width: 100%; border-radius: 12px; }
+    .live-image {
+        display: none; margin-top: 18px; max-width: min(72vw, 340px); max-height: 38vh;
+        border-radius: 18px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    }
+    .live-image.show { display: block; }
     .typing span {
         display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%;
         background: var(--accent); opacity: 0.4; animation: blink 1.2s infinite;
@@ -254,6 +260,7 @@ HTML_TEMPLATE = """
         <div class="live-status" id="live-status">Нажмите на сферу, чтобы начать говорить</div>
     </div>
     <div class="live-subtitles" id="live-subtitles">Ожидаю голосовую команду...</div>
+    <img class="live-image" id="live-image" alt="Картинка от GyertAI">
     <button class="btn-close-live" onclick="closeLive()">✕ Вернуться в чат</button>
 </div>
 
@@ -319,6 +326,7 @@ HTML_TEMPLATE = """
     const orb = document.getElementById('orb');
     const liveStatus = document.getElementById('live-status');
     const liveSubtitles = document.getElementById('live-subtitles');
+    const liveImage = document.getElementById('live-image');
     const audioPlayer = document.getElementById('audio-player');
     const textInput = document.getElementById('text-input');
 
@@ -337,7 +345,7 @@ HTML_TEMPLATE = """
         area.scrollTop = area.scrollHeight;
     }
 
-    function addMessage(text, sender) {
+    function addMessage(text, sender, image) {
         const row = document.createElement('div');
         row.className = 'row ' + sender;
         const avatar = document.createElement('div');
@@ -346,6 +354,14 @@ HTML_TEMPLATE = """
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
         bubble.innerText = text;
+        if (image) {
+            const picture = document.createElement('img');
+            picture.src = image;
+            picture.alt = 'Картинка от GyertAI';
+            picture.loading = 'lazy';
+            picture.onload = scrollDown;
+            bubble.appendChild(picture);
+        }
         row.appendChild(avatar);
         row.appendChild(bubble);
         chatInner.appendChild(row);
@@ -394,7 +410,7 @@ HTML_TEMPLATE = """
             const res = await fetch('/api/chat_text', { method: 'POST', body: fd });
             const data = await res.json();
             hideTyping();
-            addMessage(data.reply || ("Ошибка: " + (data.error || "нет ответа")), 'ai');
+            addMessage(data.reply || ("Ошибка: " + (data.error || "нет ответа")), 'ai', data.image);
         } catch (e) {
             hideTyping();
             addMessage("Ошибка соединения: " + e, 'ai');
@@ -429,6 +445,17 @@ HTML_TEMPLATE = """
     function resetLive() {
         setOrb('', 'Нажмите на сферу, чтобы начать говорить');
         liveSubtitles.innerText = 'Ожидаю голосовую команду...';
+        showLiveImage(null);
+    }
+
+    function showLiveImage(url) {
+        if (url) {
+            liveImage.src = url;
+            liveImage.classList.add('show');
+        } else {
+            liveImage.classList.remove('show');
+            liveImage.removeAttribute('src');
+        }
     }
 
     function setOrb(state, text) {
@@ -488,6 +515,7 @@ HTML_TEMPLATE = """
                 return;
             }
             liveSubtitles.innerText = data.reply;
+            showLiveImage(data.image);
             if (data.audio_url) {
                 audioPlayer.src = data.audio_url;
                 try {
@@ -649,8 +677,12 @@ async def api_chat_text(
     if not allowed:
         return JSONResponse(status_code=429, content={"error": limit_message()})
     try:
-        reply = await ask_gyert(session_id, text)
-        return {"reply": reply, "left": left}
+        result = await ask_gyert_rich(session_id, text)
+        return {
+            "reply": result["reply"],
+            "image": image_url(result["image_prompt"]) if result["image_prompt"] else None,
+            "left": left,
+        }
     except Exception as e: return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/voice")
@@ -665,12 +697,14 @@ async def api_voice(
     try:
         with open(temp_in, "wb") as f: f.write(await file.read())
         user_text = await speech_to_text(temp_in)
-        reply = await ask_gyert(session_id, user_text)
+        result = await ask_gyert_rich(session_id, user_text)
+        reply = result["reply"]
         audio_filename = f"{uuid.uuid4()}.mp3"
         await text_to_speech(reply, os.path.join("temp_audio", audio_filename))
         return {
             "user_text": user_text,
             "reply": reply,
+            "image": image_url(result["image_prompt"]) if result["image_prompt"] else None,
             "audio_url": f"/audio/{audio_filename}",
             "left": left,
         }

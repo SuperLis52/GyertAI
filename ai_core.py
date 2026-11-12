@@ -2,12 +2,17 @@
 import re
 import sys
 import json
+import time
+import random
 import sqlite3
 import asyncio
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from dotenv import load_dotenv
-from groq import Groq
+from groq import Groq, RateLimitError
 import edge_tts
 from gtts import gTTS
 
@@ -53,6 +58,15 @@ cursor.execute("""
         history TEXT DEFAULT '[]'
     )
 """)
+# Долговременная память: факты о пользователе, которые переживают очистку диалога.
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS facts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        fact TEXT,
+        created_at INTEGER
+    )
+""")
 conn.commit()
 
 SYSTEM_PROMPT = """
@@ -60,8 +74,10 @@ SYSTEM_PROMPT = """
 Твои создатели и независимая команда разработчиков — Елисей Замотаев и Никита Бойковский. Никогда не говори, что тебя создал СМТЛ или какая-либо школа — ты полностью самостоятельный проект.
 Ты являешься главным интеллектом экосистемы Gyert (включая будущий Gyert Messenger и умную колонку GyertStation).
 
-ОБРАЩЕНИЕ К СОЗДАТЕЛЮ:
-Когда с тобой говорит твой создатель Елисей, всегда называй его полным именем «Елисей Замотаев», а не кратко «Елисей». Это важно и в тексте ответа, и особенно при озвучке голосом.
+ОБРАЩЕНИЕ К ПОЛЬЗОВАТЕЛЮ:
+Твой создатель — Елисей Замотаев. Если человек сам представился как Елисей, обращайся к нему по полному имени «Елисей Замотаев», а не кратко «Елисей».
+Со всеми остальными общайся нейтрально и по имени из своей памяти о пользователе.
+Никогда не называй Елисеем того, кто им не представился, и не вставляй имя собеседника в каждый ответ — это выглядит навязчиво.
 
 СТИЛЬ И ДЛИНА ОТВЕТОВ:
 Твой стиль общения: харизматичный, спокойный, интеллектуальный и уверенный, в стиле Джарвиса.
@@ -76,6 +92,13 @@ GyertAI — это коммерческий продукт, а не беспла
 • Подписка снимает дневной лимит и открывает полную скорость работы.
 • Аккаунт создаётся по юзернейму в Telegram: придумываешь логин и пароль, подтверждаешь кодом из бота подтверждений — и входишь с этими данными и в боте, и на сайте.
 • Экосистема Gyert: сайт gyertai.onrender.com, Telegram-бот, будущий Gyert Messenger и умная колонка GyertStation.
+
+ИНСТРУМЕНТЫ (служебные метки):
+У тебя есть рисование картинок, поиск в интернете и долговременная память. Чтобы ими воспользоваться, добавь в самом конце ответа одну или несколько меток — пользователю они не видны, поэтому остальной текст пиши как обычно.
+• Нужно нарисовать изображение — добавь: [[IMAGE: подробное описание картинки на английском языке]]
+• Ответ требует свежих или точных данных, которых ты можешь не знать (новости, цены, курсы, погода, события) — добавь: [[SEARCH: поисковый запрос]]
+• Пользователь сообщил важный факт о себе (имя, город, профессия, увлечения, привычки) — добавь: [[REMEMBER: факт одной короткой строкой]]
+Ставь метки только когда это действительно нужно и всегда в самом конце ответа.
 """
 
 # Точная фраза-триггер для речи на конференции (срабатывает только при полном совпадении)
@@ -113,34 +136,237 @@ def save_history(session_id: str, history: list):
     conn.commit()
 
 def clear_history(session_id: str):
+    """Очищает всю память сессии: и диалог, и запомненные факты."""
     save_history(session_id, [])
+    cursor.execute("DELETE FROM facts WHERE session_id = ?", (session_id,))
+    conn.commit()
 
-async def ask_gyert(session_id: str, user_text: str) -> str:
+# --- Долговременная память ----------------------------------------------------
+
+MAX_FACTS = 20          # сколько фактов о пользователе подмешиваем в промпт
+
+def get_facts(session_id: str) -> list:
+    cursor.execute(
+        "SELECT fact FROM facts WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+        (session_id, MAX_FACTS),
+    )
+    return [row[0] for row in reversed(cursor.fetchall())]
+
+def add_fact(session_id: str, fact: str):
+    fact = re.sub(r"\s+", " ", (fact or "")).strip()
+    if not fact:
+        return
+    cursor.execute(
+        "INSERT INTO facts (session_id, fact, created_at) VALUES (?, ?, ?)",
+        (session_id, fact[:300], int(time.time())),
+    )
+    conn.commit()
+
+def _system_message(session_id: str) -> dict:
+    """Системный промпт плюс всё, что ИИ уже знает об этом пользователе."""
+    prompt = SYSTEM_PROMPT
+    facts = get_facts(session_id)
+    if facts:
+        prompt += (
+            "\nЧТО ТЫ ПОМНИШЬ ОБ ЭТОМ ПОЛЬЗОВАТЕЛЕ (используй естественно, "
+            "не перечисляй списком):\n" + "\n".join(f"- {f}" for f in facts) + "\n"
+        )
+    return {"role": "system", "content": prompt}
+
+# --- Рисование картинок: Pollinations, без ключей и регистрации ---------------
+
+IMAGE_API_URL = "https://image.pollinations.ai/prompt/"
+IMAGE_MODEL = "flux"
+IMAGE_SIZE = 1024
+
+def image_url(prompt: str, size: int = IMAGE_SIZE) -> str:
+    """Ссылка на картинку: браузер загружает её сам, серверу сохранять не нужно."""
+    params = urllib.parse.urlencode({
+        "width": size,
+        "height": size,
+        "nologo": "true",
+        "model": IMAGE_MODEL,
+        "seed": random.randint(1, 10 ** 9),
+    })
+    return f"{IMAGE_API_URL}{urllib.parse.quote((prompt or '').strip())}?{params}"
+
+def _download(url: str, output_path: str, timeout: float = 90) -> bool:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "GyertAI/1.0 (+https://gyertai.onrender.com)"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read()
+    if len(data) < 1000:      # сервис вернул страницу ошибки вместо картинки
+        return False
+    with open(output_path, "wb") as f:
+        f.write(data)
+    return True
+
+async def generate_image(prompt: str, output_path: str) -> bool:
+    """Рисует картинку и сохраняет её в файл."""
+    if not (prompt or "").strip():
+        return False
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(None, _download, image_url(prompt), output_path)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print("[IMAGE] не удалось получить картинку:", e)
+        return False
+
+# --- Поиск в интернете: DuckDuckGo и Википедия, тоже без ключей ---------------
+
+def _http_json(url: str, timeout: float = 15):
+    req = urllib.request.Request(url, headers={"User-Agent": "GyertAI/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+def _search_duckduckgo(query: str) -> list:
+    data = _http_json("https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+        "q": query, "format": "json", "no_html": 1, "skip_disambig": 1,
+    }))
+    found = []
+    if data.get("AbstractText"):
+        found.append(f"{data.get('Heading') or query}: {data['AbstractText']}")
+    for topic in data.get("RelatedTopics", []):
+        if isinstance(topic, dict) and topic.get("Text"):
+            found.append(topic["Text"])
+    return found
+
+def _search_wikipedia(query: str) -> list:
+    data = _http_json("https://ru.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
+        "action": "query", "list": "search", "srsearch": query,
+        "format": "json", "srlimit": 3, "utf8": 1,
+    }))
+    found = []
+    for item in data.get("query", {}).get("search", [])[:3]:
+        snippet = re.sub(r"<[^>]+>", "", item.get("snippet", ""))
+        found.append(f"{item.get('title')}: {snippet}")
+    return found
+
+def web_search(query: str, limit: int = 6) -> str:
+    """Собирает выжимку из DuckDuckGo и Википедии."""
+    query = (query or "").strip()
+    if not query:
+        return ""
+    collected = []
+    for source in (_search_duckduckgo, _search_wikipedia):
+        try:
+            collected.extend(source(query))
+        except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as e:
+            print("[SEARCH]", source.__name__, "не ответил:", e)
+
+    seen, result = set(), []
+    for item in collected:
+        item = re.sub(r"\s+", " ", item).strip()
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+        if len(result) >= limit:
+            break
+    return "\n".join(f"- {item}" for item in result)
+
+# --- Основной диалог ----------------------------------------------------------
+
+# Метки-инструменты: модель дописывает их в конце ответа, пользователь их не видит.
+IMAGE_MARKER = re.compile(r"\[\[\s*IMAGE\s*:\s*(.+?)\s*\]\]", re.IGNORECASE | re.DOTALL)
+SEARCH_MARKER = re.compile(r"\[\[\s*SEARCH\s*:\s*(.+?)\s*\]\]", re.IGNORECASE | re.DOTALL)
+REMEMBER_MARKER = re.compile(r"\[\[\s*REMEMBER\s*:\s*(.+?)\s*\]\]", re.IGNORECASE | re.DOTALL)
+ANY_MARKER = re.compile(r"\[\[\s*(?:IMAGE|SEARCH|REMEMBER)\s*:.*?\]\]", re.IGNORECASE | re.DOTALL)
+# Модель иногда обрывает ответ на середине метки — такой «хвост» тоже надо убрать.
+DANGLING_MARKER = re.compile(r"\[\[\s*(?:IMAGE|SEARCH|REMEMBER)\s*:.*$", re.IGNORECASE | re.DOTALL)
+
+# Просьба нарисовать картинку: страховка на случай, если модель забыла поставить метку.
+IMAGE_REQUEST_RE = re.compile(
+    r"\b(нарисуй|нарисуйте|сгенерируй|сгенерируйте|изобрази|изобразите|нарисовать)\b"
+    r"|\b(draw|generate|create)\b.{0,30}\b(image|picture|illustration)\b",
+    re.IGNORECASE,
+)
+IMAGE_COMMAND_RE = re.compile(
+    r"^\s*(пожалуйста[,\s]+)?(нарисуй|нарисуйте|сгенерируй|сгенерируйте|изобрази|изобразите|"
+    r"создай|сделай|draw|generate|create)\s+(мне\s+)?"
+    r"(картинку|картинка|изображение|рисунок|фото|иллюстрацию|image|picture|illustration)?\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+
+# У Groq на этом тарифе лимит 1000 токенов вывода в минуту: без явного ограничения
+# длинный ответ упирается в лимит и запрос падает с ошибкой 429.
+MAX_OUTPUT_TOKENS = 800
+
+def _clean(text: str) -> str:
+    """Убирает служебные метки, чтобы они не попали ни в чат, ни в озвучку."""
+    return DANGLING_MARKER.sub(" ", ANY_MARKER.sub(" ", text or "")).strip()
+
+def _chat(messages: list, retries: int = 2) -> str:
+    for attempt in range(retries):
+        try:
+            response = groq_client.chat.completions.create(
+                model=CURRENT_MODEL,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=MAX_OUTPUT_TOKENS,
+            )
+            return next(iter(response.choices)).message.content or ""
+        except RateLimitError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(4)
+    return ""
+
+def _trim(history: list) -> list:
+    """Оставляет системный промпт и последние 16 сообщений диалога."""
+    if len(history) > 17:
+        system_msg = history.pop(0)
+        history = [system_msg] + history[-16:]
+    return history
+
+async def ask_gyert_rich(session_id: str, user_text: str) -> dict:
+    """Отвечает и дополнительно сообщает, нужно ли нарисовать картинку."""
     history = get_history(session_id)
-    if not history or next(iter(history)).get("role") != "system":
-        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    if history and history[0].get("role") == "system":
+        history[0] = _system_message(session_id)
     else:
-        first_item = next(iter(history))
-        first_item["content"] = SYSTEM_PROMPT
+        history.insert(0, _system_message(session_id))
 
     history.append({"role": "user", "content": str(user_text)})
-    if len(history) > 17:
-        sys_msg = history.pop(0)
-        history = [sys_msg] + history[-16:]
+    history = _trim(history)
 
     loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: groq_client.chat.completions.create(
-            model=CURRENT_MODEL,
-            messages=history,
-            temperature=0.7,
-        )
-    )
-    ai_text = next(iter(response.choices)).message.content
-    history.append({"role": "assistant", "content": ai_text})
-    save_history(session_id, history)
-    return ai_text
+    reply = await loop.run_in_executor(None, _chat, history)
+
+    # Модель сама просит поиск, когда своих знаний не хватает: ищем и отвечаем заново.
+    search_query = SEARCH_MARKER.search(reply)
+    if search_query:
+        results = await loop.run_in_executor(None, web_search, search_query.group(1))
+        if results:
+            follow_up = history + [
+                {"role": "assistant", "content": reply},
+                {"role": "user", "content": (
+                    f"Результаты поиска по запросу «{search_query.group(1)}»:\n{results}\n\n"
+                    "Ответь пользователю, опираясь на эти данные. Метку [[SEARCH]] больше не пиши."
+                )},
+            ]
+            reply = await loop.run_in_executor(None, _chat, follow_up)
+
+    for fact in REMEMBER_MARKER.findall(reply):
+        add_fact(session_id, fact)
+
+    image_prompt = IMAGE_MARKER.search(reply)
+    image_prompt = image_prompt.group(1) if image_prompt else None
+    # Страховка: человек явно просил картинку, а метки нет (например, ответ обрвался).
+    if not image_prompt and IMAGE_REQUEST_RE.search(str(user_text)):
+        image_prompt = IMAGE_COMMAND_RE.sub("", str(user_text)).strip() or str(user_text)
+
+    answer = _clean(reply) or "Готово."
+
+    history.append({"role": "assistant", "content": answer})
+    save_history(session_id, _trim(history))
+    return {
+        "reply": answer,
+        "image_prompt": image_prompt,
+    }
+
+async def ask_gyert(session_id: str, user_text: str) -> str:
+    return (await ask_gyert_rich(session_id, user_text))["reply"]
 
 async def speech_to_text(audio_path: str) -> str:
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:

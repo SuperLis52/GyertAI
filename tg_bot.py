@@ -9,7 +9,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 from ai_core import (
-    ask_gyert,
+    ask_gyert_rich,
+    generate_image,
     speech_to_text,
     text_to_speech,
     clear_history,
@@ -383,6 +384,39 @@ async def cmd_tts(message: types.Message):
         if os.path.exists(out_mp3):
             os.remove(out_mp3)
 
+# /image <описание> — нарисовать картинку и прислать её в чат
+async def send_generated_image(message: types.Message, prompt: str, caption: str = None):
+    os.makedirs("temp_audio", exist_ok=True)
+    out_jpg = os.path.join("temp_audio", f"img_{uuid.uuid4()}.jpg")
+    await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
+    try:
+        if not await generate_image(prompt, out_jpg):
+            await message.answer("⚠️ Не удалось нарисовать картинку. Попробуйте ещё раз.")
+            return
+        await message.answer_photo(
+            types.FSInputFile(out_jpg),
+            caption=(caption or f"🎨 {prompt}")[:1000],
+        )
+    except Exception as e:
+        await message.answer(f"⚠️ Не удалось отправить картинку: {e}")
+    finally:
+        if os.path.exists(out_jpg):
+            os.remove(out_jpg)
+
+@dp.message(Command("image"))
+async def cmd_image(message: types.Message):
+    prompt = (message.text or "").partition(" ")[2].strip()
+    if not prompt:
+        await message.answer(
+            "Опишите картинку после команды, например:\n"
+            "<code>/image кот в космическом шлеме</code>",
+            parse_mode="HTML",
+        )
+        return
+    if not await check_limit(message):
+        return
+    await send_generated_image(message, prompt)
+
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     if not await check_limit(message):
@@ -390,7 +424,8 @@ async def handle_text(message: types.Message):
     chat_id = message.chat.id
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        reply = await ask_gyert(f"tg_{chat_id}", message.text)
+        result = await ask_gyert_rich(f"tg_{chat_id}", message.text)
+        reply = result["reply"]
         await message.answer(reply, reply_markup=get_main_keyboard())
     except Exception as e:
         await message.answer(f"⚠️ Ошибка ядра: {e}")
@@ -409,6 +444,10 @@ async def handle_text(message: types.Message):
         if os.path.exists(out_mp3):
             os.remove(out_mp3)
 
+    # Картинку отправляем последней, чтобы она не задерживала голосовой ответ
+    if result["image_prompt"]:
+        await send_generated_image(message, result["image_prompt"])
+
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     if not await check_limit(message):
@@ -418,11 +457,13 @@ async def handle_voice(message: types.Message):
     os.makedirs("temp_audio", exist_ok=True)
     in_ogg = os.path.join("temp_audio", f"in_{uuid.uuid4()}.ogg")
     out_mp3 = os.path.join("temp_audio", f"out_{uuid.uuid4()}.mp3")
+    result = None
 
     try:
         await bot.download(file=message.voice.file_id, destination=in_ogg)
         user_text = await speech_to_text(in_ogg)
-        reply = await ask_gyert(f"tg_{chat_id}", user_text)
+        result = await ask_gyert_rich(f"tg_{chat_id}", user_text)
+        reply = result["reply"]
 
         await message.answer(
             f"🤖 <b>GyertAI:</b> {html.escape(reply)}",
@@ -439,6 +480,10 @@ async def handle_voice(message: types.Message):
         for f in (in_ogg, out_mp3):
             if os.path.exists(f):
                 os.remove(f)
+
+    # Картинку отправляем последней, чтобы она не задерживала голосовой ответ
+    if result and result["image_prompt"]:
+        await send_generated_image(message, result["image_prompt"])
 
 async def handle_web(request):
     return web.Response(text="GyertAI Telegram Bot is Live!")
