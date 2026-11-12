@@ -64,8 +64,8 @@ async def check_limit(message: types.Message) -> bool:
     await message.answer(
         f"⛔ Бесплатный лимит — {accounts.FREE_DAILY_LIMIT} запросов в день — исчерпан.\n\n"
         "Оформите подписку по команде /account:\n"
-        "• неделя — 1.5 GRAM\n"
-        "• месяц — 4 GRAM\n\n"
+        "• неделя — 1.5 GRAM или 100 звёзд Telegram\n"
+        "• месяц — 4 GRAM или 250 звёзд Telegram\n\n"
         "Или активируйте промокод там же.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard(),
@@ -100,6 +100,12 @@ def account_keyboard(state):
     if state and state["login"]:
         builder.button(text="💳 Неделя — 1.5 GRAM", callback_data="acc_buy_week")
         builder.button(text="💳 Месяц — 4 GRAM", callback_data="acc_buy_month")
+        builder.button(
+            text=f"⭐ Неделя — {accounts.STARS_PLANS['week']} звёзд", callback_data="acc_stars_week"
+        )
+        builder.button(
+            text=f"⭐ Месяц — {accounts.STARS_PLANS['month']} звёзд", callback_data="acc_stars_month"
+        )
         builder.button(text="🔑 Ввести промокод", callback_data="acc_promo")
     else:
         builder.button(text="✨ Создать аккаунт", callback_data="acc_create")
@@ -224,6 +230,43 @@ async def cb_account_buy(callback: types.CallbackQuery):
         "Оплатите по кнопке ниже, подписка включится автоматически.",
         parse_mode="HTML",
         reply_markup=builder.as_markup(),
+    )
+
+@dp.callback_query(F.data.in_({"acc_stars_week", "acc_stars_month"}))
+async def cb_account_buy_stars(callback: types.CallbackQuery):
+    username = accounts.normalize_username(remember_user(callback) or "")
+    await callback.answer()
+    plan = "week" if callback.data == "acc_stars_week" else "month"
+    stars = accounts.STARS_PLANS[plan]
+    ok, result = await asyncio.to_thread(accounts.create_stars_invoice_link, plan, username)
+    if not ok:
+        await callback.message.answer(f"⚠️ {result}")
+        return
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"⭐ Оплатить {stars} звёзд", url=result)
+    await callback.message.answer(
+        f"⭐ Счёт на <b>{stars} звёзд Telegram</b> — подписка на "
+        f"{accounts.PLANS[plan][0]} дней.\n"
+        "Оплатите по кнопке ниже, подписка включится автоматически.",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup(),
+    )
+
+# Telegram присылает этот запрос перед оплатой — надо подтвердить в течение 10 секунд.
+@dp.pre_checkout_query()
+async def on_pre_checkout(query: types.PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def on_stars_paid(message: types.Message):
+    payment = message.successful_payment
+    ok, result = await asyncio.to_thread(accounts.apply_stars_payment, payment.invoice_payload)
+    if not ok:
+        await message.answer(f"⚠️ Оплата прошла, но подписку не удалось начислить: {result}")
+        return
+    await message.answer(
+        f"⭐ Спасибо за оплату! Подписка GyertAI активирована: {result}.",
+        reply_markup=get_main_keyboard(),
     )
 
 def in_account_dialog(message: types.Message) -> bool:

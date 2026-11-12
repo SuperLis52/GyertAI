@@ -29,6 +29,10 @@ PLANS = {                        # тариф -> (дней подписки, ц�
     "week": (7, "1.5"),
     "month": (30, "4"),
 }
+STARS_PLANS = {                  # тариф -> цена в звёздах Telegram
+    "week": 100,
+    "month": 250,
+}
 
 XROCKET_CURRENCY = os.environ.get("XROCKET_CURRENCY", "GRAM")
 XROCKET_INVOICES_URL = os.environ.get(
@@ -460,6 +464,79 @@ def create_invoice(username: str, plan: str, base_url: str = ""):
     if not link:
         return False, "xRocket не вернул ссылку на оплату."
     return True, link
+
+
+# --- Оплата звёздами Telegram -------------------------------------------------
+
+TELEGRAM_API_URL = "https://api.telegram.org"
+
+
+def _telegram_api(method: str, payload: dict, token: str = None):
+    """Вызывает метод Bot API и возвращает (ok, результат или текст ошибки)."""
+    token = token or BOT_TOKEN
+    if not token:
+        return False, "Не настроен токен бота."
+    req = urllib.request.Request(
+        f"{TELEGRAM_API_URL}/bot{token}/{method}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return False, f"Telegram отклонил запрос ({e.code}): {e.read().decode(errors='ignore')[:200]}"
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return False, f"Не удалось связаться с Telegram: {e}"
+    if not data.get("ok"):
+        return False, data.get("description") or "Telegram вернул ошибку."
+    return True, data.get("result")
+
+
+def stars_payload(plan: str, username: str) -> str:
+    """Метка платежа: по ней после оплаты восстанавливается тариф и аккаунт."""
+    return f"stars:{plan}:{normalize_username(username)}:{_now()}"
+
+
+def create_stars_invoice_link(plan: str, username: str):
+    """Создаёт ссылку на оплату подписки звёздами Telegram (валюта XTR)."""
+    username = normalize_username(username)
+    if plan not in STARS_PLANS:
+        return False, "Неизвестный тариф."
+    if not has_account(username):
+        return False, "Сначала создайте аккаунт."
+    if not BOT_TOKEN:
+        return False, "Оплата временно недоступна: не настроен токен бота."
+
+    title = f"GyertAI — подписка на {'неделю' if plan == 'week' else 'месяц'}"
+    ok, result = _telegram_api("createInvoiceLink", {
+        "title": title,
+        "description": f"Подписка GyertAI на {PLANS[plan][0]} дней без дневного лимита.",
+        "payload": stars_payload(plan, username),
+        "currency": "XTR",
+        "prices": [{"label": title, "amount": STARS_PLANS[plan]}],
+    })
+    if not ok:
+        return False, result
+    if not isinstance(result, str):
+        return False, "Telegram не вернул ссылку на оплату."
+    return True, result
+
+
+def apply_stars_payment(payload: str):
+    """Начисляет подписку после успешной оплаты звёздами. Возвращает (ok, текст)."""
+    parts = (payload or "").split(":")
+    if len(parts) < 3 or parts[0] != "stars":
+        return False, "Неизвестный платёж."
+    plan = parts[1]
+    username = normalize_username(parts[2])
+    if plan not in PLANS:
+        return False, "Неизвестный тариф."
+    if not has_account(username):
+        return False, "Аккаунт не найден."
+    until = grant_subscription(username, PLANS[plan][0])
+    return True, f"{PLANS[plan][0]} дней подписки до {_iso(until)}"
 
 
 def verify_webhook(raw_body: bytes, signature: str, version: str, timestamp: str) -> bool:
