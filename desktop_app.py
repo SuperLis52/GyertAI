@@ -1,5 +1,6 @@
-﻿import os
+import os
 import uuid
+import math
 import asyncio
 import threading
 import customtkinter as ctk
@@ -14,101 +15,207 @@ pygame.mixer.init()
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# --- Палитра GyertAI ---
+C_BG = "#05070d"
+C_PANEL = "#0b101a"
+C_PANEL_2 = "#121a28"
+C_BORDER = "#1e293b"
+C_ACCENT = "#22d3ee"
+C_TEXT = "#e6edf7"
+C_MUTED = "#7b8aa3"
+C_FAINT = "#3f4b60"
+C_USER = "#67e8f9"
+C_AI = "#c7d2fe"
+C_SYS = "#fda4af"
+C_DANGER = "#f43f5e"
+
+ORB_PALETTE = {
+    "idle": {"ring": "#22d3ee", "core": "#0ea5e9", "glow": "#08283a", "status": "Система готова к работе"},
+    "listening": {"ring": "#fb7185", "core": "#f43f5e", "glow": "#3b1018", "status": "Слушаю вас... Говорите в микрофон"},
+    "thinking": {"ring": "#c084fc", "core": "#a855f7", "glow": "#2a1145", "status": "GyertAI думает..."},
+    "speaking": {"ring": "#34d399", "core": "#10b981", "glow": "#08301f", "status": "GyertAI говорит..."},
+}
+ORB_SPEED = {"idle": 0.09, "listening": 0.34, "thinking": 0.22, "speaking": 0.45}
+
+
 class GyertDesktopApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("GyertAI — GyertAI Desktop")
-        self.geometry("540x720")
-        self.configure(fg_color="#07070c")
+        self.title("GyertAI — Desktop")
+        self.geometry("560x820")
+        self.minsize(520, 720)
+        self.configure(fg_color=C_BG)
 
         self.session_id = "windows_desktop_user"
         self.is_recording = False
         self.audio_frames = []
         self.sample_rate = 16000
 
-        # Заголовок
-        self.header = ctk.CTkLabel(
-            self, text="GYERT AI", 
-            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
-            text_color="#00d2ff"
+        # Состояние «сферы Джарвиса»
+        self._orb_state = "idle"
+        self._phase = 0.0
+        self._cx, self._cy = 95, 95
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+
+        self._build_header()
+        self._build_orb()
+        self._build_chat()
+        self._build_input()
+        self._build_controls()
+        self._build_footer()
+
+        self.after(50, self._animate_orb)
+
+    # ---------- Интерфейс ----------
+
+    def _build_header(self):
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=22, pady=(18, 2))
+        header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            header, text="GYERT AI",
+            font=ctk.CTkFont(family="Segoe UI", size=26, weight="bold"),
+            text_color=C_ACCENT
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            header, text="ARTIFICIAL INTELLIGENCE SYSTEM",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=C_MUTED
+        ).grid(row=1, column=0, sticky="w")
+
+        self.state_pill = ctk.CTkLabel(
+            header, text="● ONLINE",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=C_ACCENT, fg_color=C_PANEL_2, corner_radius=12, padx=12, pady=4
         )
-        self.header.pack(pady=(20, 2))
+        self.state_pill.grid(row=0, column=1, rowspan=2, sticky="e")
 
-        self.sub_header = ctk.CTkLabel(
-            self, text="ARTIFICIAL INTELLIGENCE SYSTEM",
-            font=ctk.CTkFont(size=11), text_color="#64748b"
+    def _build_orb(self):
+        orb_frame = ctk.CTkFrame(self, fg_color="transparent")
+        orb_frame.grid(row=1, column=0, pady=(8, 0))
+
+        self.canvas = ctk.CTkCanvas(orb_frame, width=190, height=190, bg=C_BG, highlightthickness=0)
+        self.canvas.pack()
+
+        self.orb_glow = self.canvas.create_oval(0, 0, 0, 0, fill=ORB_PALETTE["idle"]["glow"], outline="")
+        self.orb_ring = self.canvas.create_oval(0, 0, 0, 0, fill="", outline=ORB_PALETTE["idle"]["ring"], width=2)
+        self.orb_core = self.canvas.create_oval(0, 0, 0, 0, fill=ORB_PALETTE["idle"]["core"], outline="")
+
+        self.status_label = ctk.CTkLabel(
+            self, text=ORB_PALETTE["idle"]["status"],
+            font=ctk.CTkFont(family="Segoe UI", size=13), text_color=C_MUTED
         )
-        self.sub_header.pack(pady=(0, 15))
+        self.status_label.grid(row=2, column=0, pady=(4, 10))
 
-        # Световая сфера Джарвиса (Canvas)
-        self.canvas = ctk.CTkCanvas(self, width=140, height=140, bg="#07070c", highlightthickness=0)
-        self.canvas.pack(pady=5)
-        self.outer_glow = self.canvas.create_oval(10, 10, 130, 130, fill="#0a2540", outline="#00d2ff", width=2)
-        self.inner_orb = self.canvas.create_oval(30, 30, 110, 110, fill="#0077ff", outline="")
+    def _build_chat(self):
+        wrap = ctk.CTkFrame(self, fg_color=C_PANEL, corner_radius=16, border_width=1, border_color=C_BORDER)
+        wrap.grid(row=3, column=0, sticky="nsew", padx=22, pady=(0, 10))
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_rowconfigure(1, weight=1)
 
-        self.status_label = ctk.CTkLabel(self, text="Система готова к работе", text_color="#94a3b8", font=ctk.CTkFont(size=13))
-        self.status_label.pack(pady=(5, 10))
+        ctk.CTkLabel(
+            wrap, text="ДИАЛОГ", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            text_color=C_MUTED
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 4))
 
-        # Поле истории чата
         self.chat_box = ctk.CTkTextbox(
-            self, width=480, height=320, fg_color="#0f111a", 
-            border_color="#1e293b", border_width=1, corner_radius=15,
-            font=ctk.CTkFont(size=14), wrap="word"
+            wrap, fg_color="transparent", border_width=0, wrap="word",
+            font=ctk.CTkFont(family="Segoe UI", size=14), text_color=C_TEXT
         )
-        self.chat_box.pack(pady=10, padx=20)
-        self.chat_box.insert("end", "GyertAI: Приветствую! Система GyertAI запущена. Чем могу помочь?\n\n")
-        self.chat_box.configure(state="disabled")
+        self.chat_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 10))
 
-        # Панель ввода
-        self.input_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.input_frame.pack(pady=10, padx=20, fill="x")
+        # В CTkTextbox для тегов запрещено менять шрифт, поэтому различаем отправителей цветом
+        self.chat_box.tag_config("name_user", foreground=C_USER)
+        self.chat_box.tag_config("name_ai", foreground=C_ACCENT)
+        self.chat_box.tag_config("name_sys", foreground=C_SYS)
+        self.chat_box.tag_config("body_user", foreground=C_TEXT)
+        self.chat_box.tag_config("body_ai", foreground=C_AI)
+        self.chat_box.tag_config("body_sys", foreground=C_MUTED)
+
+        self._append("GyertAI", "Приветствую! Система GyertAI запущена. Чем могу помочь?", "ai")
+
+    def _build_input(self):
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.grid(row=4, column=0, sticky="ew", padx=22, pady=(0, 8))
+        row.grid_columnconfigure(0, weight=1)
 
         self.entry = ctk.CTkEntry(
-            self.input_frame, placeholder_text="Введите запрос для GyertAI...",
-            height=45, corner_radius=22, fg_color="#131622", border_color="#2d3748"
+            row, placeholder_text="Введите запрос для GyertAI...", height=46, corner_radius=23,
+            fg_color=C_PANEL_2, border_color=C_BORDER, border_width=1,
+            text_color=C_TEXT, font=ctk.CTkFont(family="Segoe UI", size=14)
         )
-        self.entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self.entry.bind("<Return>", lambda e: self.on_send_text())
 
         self.send_btn = ctk.CTkButton(
-            self.input_frame, text="➤", width=45, height=45, corner_radius=22,
-            fg_color="#0077ff", hover_color="#005bb5", command=self.on_send_text
+            row, text="➤", width=46, height=46, corner_radius=23,
+            fg_color=C_ACCENT, hover_color="#0e9bb5", text_color="#04121a",
+            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+            command=self.on_send_text
         )
-        self.send_btn.pack(side="right")
+        self.send_btn.grid(row=0, column=1)
 
-        # Нижние кнопки управления
-        self.bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.bottom_frame.pack(pady=(5, 20), padx=20, fill="x")
+    def _build_controls(self):
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.grid(row=5, column=0, sticky="ew", padx=22, pady=(0, 10))
+        row.grid_columnconfigure(0, weight=1)
 
         self.mic_btn = ctk.CTkButton(
-            self.bottom_frame, text="🎙 Говорить", height=42, corner_radius=20,
-            fg_color="#1e293b", hover_color="#334155", command=self.toggle_recording
+            row, text="🎙  ГОВОРИТЬ", height=44, corner_radius=22,
+            fg_color=C_PANEL_2, hover_color="#1c2740", text_color=C_TEXT,
+            border_width=1, border_color=C_BORDER,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=self.toggle_recording
         )
-        self.mic_btn.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.mic_btn.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
         self.clear_btn = ctk.CTkButton(
-            self.bottom_frame, text="🧹 Очистить память", height=42, corner_radius=20,
-            fg_color="#1e293b", hover_color="#334155", command=self.on_clear
+            row, text="🧹  ОЧИСТИТЬ", height=44, corner_radius=22, width=140,
+            fg_color=C_PANEL_2, hover_color="#1c2740", text_color=C_MUTED,
+            border_width=1, border_color=C_BORDER,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=self.on_clear
         )
-        self.clear_btn.pack(side="right")
-    def set_orb_state(self, state: str, status_msg: str):
-        self.status_label.configure(text=status_msg)
-        if state == "listening":
-            self.canvas.itemconfig(self.outer_glow, fill="#3b0d11", outline="#ff3b30")
-            self.canvas.itemconfig(self.inner_orb, fill="#ff2d55")
-        elif state == "thinking":
-            self.canvas.itemconfig(self.outer_glow, fill="#241336", outline="#bf5af2")
-            self.canvas.itemconfig(self.inner_orb, fill="#af52de")
-        elif state == "speaking":
-            self.canvas.itemconfig(self.outer_glow, fill="#0b3322", outline="#30d158")
-            self.canvas.itemconfig(self.inner_orb, fill="#32d74b")
-        else:
-            self.canvas.itemconfig(self.outer_glow, fill="#0a2540", outline="#00d2ff")
-            self.canvas.itemconfig(self.inner_orb, fill="#0077ff")
+        self.clear_btn.grid(row=0, column=1)
 
-    def append_chat(self, sender: str, text: str):
+    def _build_footer(self):
+        ctk.CTkLabel(
+            self, text="Елисей Замотаев  ·  Никита Бойковский  ·  Gyert Ecosystem",
+            font=ctk.CTkFont(family="Segoe UI", size=10), text_color=C_FAINT
+        ).grid(row=6, column=0, pady=(0, 14))
+
+    # ---------- Анимация сферы ----------
+
+    def _animate_orb(self):
+        self._phase += ORB_SPEED[self._orb_state]
+        scale = 1.0 + 0.045 * math.sin(self._phase)
+        self._set_oval(self.orb_glow, 86 * scale)
+        self._set_oval(self.orb_ring, 64 * scale)
+        self._set_oval(self.orb_core, 42 * scale)
+        self.after(45, self._animate_orb)
+
+    def _set_oval(self, item, radius):
+        self.canvas.coords(item, self._cx - radius, self._cy - radius, self._cx + radius, self._cy + radius)
+
+    def set_orb_state(self, state: str, status_msg: str = None):
+        self._orb_state = state if state in ORB_PALETTE else "idle"
+        palette = ORB_PALETTE[self._orb_state]
+        self.canvas.itemconfig(self.orb_glow, fill=palette["glow"])
+        self.canvas.itemconfig(self.orb_ring, outline=palette["ring"])
+        self.canvas.itemconfig(self.orb_core, fill=palette["core"])
+        self.status_label.configure(text=status_msg or palette["status"])
+        self.state_pill.configure(text_color=palette["ring"])
+
+    # ---------- Логика чата ----------
+
+    def _append(self, sender: str, text: str, kind: str):
         self.chat_box.configure(state="normal")
-        self.chat_box.insert("end", f"{sender}: {text}\n\n")
+        self.chat_box.insert("end", f"{sender}\n", f"name_{kind}")
+        self.chat_box.insert("end", f"{text}\n\n", f"body_{kind}")
         self.chat_box.see("end")
         self.chat_box.configure(state="disabled")
 
@@ -116,27 +223,30 @@ class GyertDesktopApp(ctk.CTk):
         clear_history(self.session_id)
         self.chat_box.configure(state="normal")
         self.chat_box.delete("1.0", "end")
-        self.chat_box.insert("end", "GyertAI: Память диалога очищена. Готов к новой теме!\n\n")
         self.chat_box.configure(state="disabled")
+        self._append("Система", "Память диалога очищена. Готов к новой теме!", "sys")
+        self.set_orb_state("idle")
 
     def on_send_text(self):
         text = self.entry.get().strip()
         if not text:
             return
         self.entry.delete(0, "end")
-        self.append_chat("Вы", text)
+        self._append("Вы", text, "user")
         threading.Thread(target=self.process_ai_pipeline, args=(text,), daemon=True).start()
+
+    # ---------- Голосовой ввод ----------
 
     def toggle_recording(self):
         if not self.is_recording:
             self.is_recording = True
             self.audio_frames = []
-            self.mic_btn.configure(text="⏹ Стоп (Отправить)", fg_color="#ff2d55", hover_color="#d70015")
+            self.mic_btn.configure(text="⏹  СТОП", fg_color=C_DANGER, hover_color="#d92b4b", text_color="#1a0509")
             self.set_orb_state("listening", "Слушаю вас... Говорите в микрофон")
             threading.Thread(target=self.record_audio_loop, daemon=True).start()
         else:
             self.is_recording = False
-            self.mic_btn.configure(text="🎙 Говорить", fg_color="#1e293b", hover_color="#334155")
+            self.mic_btn.configure(text="🎙  ГОВОРИТЬ", fg_color=C_PANEL_2, hover_color="#1c2740", text_color=C_TEXT)
             self.set_orb_state("thinking", "Распознаю голос...")
 
     def record_audio_loop(self):
@@ -163,14 +273,16 @@ class GyertDesktopApp(ctk.CTk):
             if not user_text:
                 self.set_orb_state("idle", "Речь не распознана")
                 return
-            self.append_chat("Вы (голос)", user_text)
+            self._append("Вы (голос)", user_text, "user")
             self.process_ai_pipeline(user_text)
         except Exception as e:
-            self.append_chat("Система", f"Ошибка микрофона: {e}")
+            self._append("Система", f"Ошибка микрофона: {e}", "sys")
             self.set_orb_state("idle", "Ошибка распознавания")
         finally:
             if os.path.exists(wav_path):
                 os.remove(wav_path)
+
+    # ---------- Основной конвейер ----------
 
     def process_ai_pipeline(self, user_text: str):
         self.set_orb_state("thinking", "GyertAI думает...")
@@ -178,7 +290,7 @@ class GyertDesktopApp(ctk.CTk):
         asyncio.set_event_loop(loop)
         try:
             reply = loop.run_until_complete(ask_gyert(self.session_id, user_text))
-            self.append_chat("GyertAI", reply)
+            self._append("GyertAI", reply, "ai")
 
             os.makedirs("temp_audio", exist_ok=True)
             out_mp3 = os.path.join("temp_audio", f"jarvis_{uuid.uuid4()}.mp3")
@@ -194,11 +306,11 @@ class GyertDesktopApp(ctk.CTk):
             if os.path.exists(out_mp3):
                 os.remove(out_mp3)
         except Exception as e:
-            self.append_chat("Система", f"Ошибка ядра: {e}")
+            self._append("Система", f"Ошибка ядра: {e}", "sys")
         finally:
             self.set_orb_state("idle", "Система готова к работе")
+
 
 if __name__ == "__main__":
     app = GyertDesktopApp()
     app.mainloop()
-

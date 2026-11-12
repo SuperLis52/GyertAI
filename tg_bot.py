@@ -1,14 +1,23 @@
-﻿import os
+import os
 import uuid
 import asyncio
+import html
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
-from ai_core import ask_gyert, speech_to_text, text_to_speech, clear_history
+from ai_core import (
+    ask_gyert,
+    speech_to_text,
+    text_to_speech,
+    clear_history,
+    CONFERENCE_TRIGGER,
+    CONFERENCE_SPEECH,
+    CONFERENCE_LEGAL,
+)
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
@@ -17,16 +26,17 @@ dp = Dispatcher()
 def get_main_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🧹 Очистить память", callback_data="clear_mem")
-    builder.button(text="🎤 Речь для СМТЛ", callback_data="smtl_speech")
-    builder.adjust(2)
+    builder.adjust(1)
     return builder.as_markup()
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
-        "👋 Приветствую! Я **GyertAI** — интеллектуальное ядро экосистемы Gyert и умной станции **GyertStation**.\n\n"
-        "Пиши мне любые задачи или отправляй голосовые сообщения — я отвечу голосом в стиле Джарвиса!",
-        parse_mode="Markdown",
+        "👋 Приветствую! Я <b>GyertAI</b> — интеллектуальное ядро экосистемы Gyert "
+        "и умной станции <b>GyertStation</b>.\n\n"
+        "Пиши мне любые задачи или отправляй голосовые сообщения — я отвечу голосом "
+        "в стиле Джарвиса!",
+        parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
 
@@ -36,20 +46,27 @@ async def cb_clear(callback: types.CallbackQuery):
     await callback.answer("Память диалога очищена!")
     await callback.message.answer("🧹 Память сброшена. Готов к новым задачам!")
 
-@dp.callback_query(F.data == "smtl_speech")
-async def cb_smtl(callback: types.CallbackQuery):
-    await callback.answer("Запускаю протокол презентации...")
-    chat_id = callback.message.chat.id
+# Секретная активация речи на конференции: только точное сообщение,
+# с полным совпадением регистра, пробелов и написания.
+@dp.message(F.text == CONFERENCE_TRIGGER)
+async def handle_conference_speech(message: types.Message):
+    chat_id = message.chat.id
     await bot.send_chat_action(chat_id=chat_id, action="record_voice")
-    
-    reply = await ask_gyert(f"tg_{chat_id}", "Поприветствуй зал и жюри научной конференции СМТЛ!")
-    await callback.message.answer(f"🤖 *GyertAI:* {reply}", parse_mode="Markdown")
-    
+
+    # Показываем речь вместе с юридической информацией (она только в тексте,
+    # озвучивается же исключительно сама речь).
+    display_text = f"{html.escape(CONFERENCE_SPEECH)}\n\n<i>{html.escape(CONFERENCE_LEGAL)}</i>"
+    await message.answer(display_text, parse_mode="HTML")
+
     os.makedirs("temp_audio", exist_ok=True)
-    out_mp3 = os.path.join("temp_audio", f"tg_smtl_{uuid.uuid4()}.mp3")
+    out_mp3 = os.path.join("temp_audio", f"conference_{uuid.uuid4()}.mp3")
     try:
-        await text_to_speech(reply, out_mp3)
-        await callback.message.answer_audio(types.FSInputFile(out_mp3), title="GyertStation Presentation")
+        await text_to_speech(CONFERENCE_SPEECH, out_mp3)
+        await message.answer_audio(
+            types.FSInputFile(out_mp3), title="GyertAI — Речь для конференции"
+        )
+    except Exception as e:
+        await message.answer(f"⚠️ Не удалось озвучить речь: {e}")
     finally:
         if os.path.exists(out_mp3):
             os.remove(out_mp3)
@@ -71,14 +88,18 @@ async def handle_voice(message: types.Message):
     os.makedirs("temp_audio", exist_ok=True)
     in_ogg = os.path.join("temp_audio", f"in_{uuid.uuid4()}.ogg")
     out_mp3 = os.path.join("temp_audio", f"out_{uuid.uuid4()}.mp3")
-    
+
     try:
         await bot.download(file=message.voice.file_id, destination=in_ogg)
         user_text = await speech_to_text(in_ogg)
         reply = await ask_gyert(f"tg_{chat_id}", user_text)
-        
-        await message.answer(f"🤖 *GyertAI:* {reply}", parse_mode="Markdown", reply_markup=get_main_keyboard())
-        
+
+        await message.answer(
+            f"🤖 <b>GyertAI:</b> {html.escape(reply)}",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard()
+        )
+
         await bot.send_chat_action(chat_id=chat_id, action="record_voice")
         await text_to_speech(reply, out_mp3)
         await message.answer_audio(types.FSInputFile(out_mp3), title="GyertAI Voice")

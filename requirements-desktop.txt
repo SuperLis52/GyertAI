@@ -1,0 +1,8 @@
+# Дополнительные зависимости только для десктопной версии (desktop_app.py).
+# Устанавливать локально:  pip install -r requirements-desktop.txt
+-r requirements.txt
+customtkinter>=5.2.2
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.26.0
+pygame>=2.5.2

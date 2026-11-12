@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: gyertai
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      # Значения задаются вручную в панели Render (секреты), а не в репозитории.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: BOT_TOKEN
+        sync: false

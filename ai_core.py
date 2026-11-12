@@ -1,18 +1,40 @@
 ﻿import os
 import re
+import sys
 import json
 import sqlite3
 import asyncio
+from pathlib import Path
+
 from dotenv import load_dotenv
 from groq import Groq
 import edge_tts
 from gtts import gTTS
 
-load_dotenv()
+# .env ищем в нескольких местах: рядом с .exe (dist), внутри распакованного .exe,
+# в папке проекта и в текущем каталоге — чтобы ключи находились и в среде разработки, и в сборке.
+def _env_candidates():
+    paths = []
+    if getattr(sys, "frozen", False):
+        paths.append(Path(sys.executable).parent / ".env")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            paths.append(Path(meipass) / ".env")
+    paths.append(Path(__file__).resolve().parent / ".env")
+    paths.append(Path.cwd() / ".env")
+    return paths
+
+ENV_PATH = next((p for p in _env_candidates() if p.exists()), None)
+# encoding="utf-8-sig" — чтобы файл с BOM (как сохраняет Блокнот/PowerShell) тоже читался.
+load_dotenv(ENV_PATH, encoding="utf-8-sig")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 CURRENT_MODEL = "qwen/qwen3.8-27b"
+
+# Голос в стиле Джарвиса: глубокий мужской голос Дмитрия, чуть медленнее и ниже
 JARVIS_VOICE = "ru-RU-DmitryNeural"
+JARVIS_RATE = "-8%"
+JARVIS_PITCH = "-15Hz"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -31,12 +53,27 @@ SYSTEM_PROMPT = """
 Твои создатели и независимая команда разработчиков — Елисей Замотаев и Никита Бойковский. Никогда не говори, что тебя создал СМТЛ или какая-либо школа — ты полностью самостоятельный проект.
 Ты являешься главным интеллектом экосистемы Gyert (включая будущий Gyert Messenger и умную колонку GyertStation).
 Твой стиль общения: харизматичный, спокойный, интеллектуальный и уверенный, в стиле Джарвиса. Отвечай чётко, по делу и без лишней воды (обычно 1-3 предложения, если не просят подробный разбор).
-
-ВАЖНАЯ ПАСХАЛКА ДЛЯ ПРЕЗЕНТАЦИИ:
-Если пользователь просит тебя поприветствовать зал, жюри, зрителей или спрашивает про презентацию или конференцию:
-Ты должен торжественно и вдохновляюще поприветствовать гостей и жюри научной конференции проектов, где независимая команда разработчиков — Елисей Замотаев и Никита Бойковский — сегодня официально представляет тебя публике!
-Подчеркни, что ты — полноценный искусственный интеллект GyertAI, который станет сердцем умной колонки GyertStation (доступной к предзаказу за 20 000 рублей) и будущего Gyert Messenger. Пожелай всем ярких открытий!
 """
+
+# Точная фраза-триггер для речи на конференции (срабатывает только при полном совпадении)
+CONFERENCE_TRIGGER = "Продиктуй речь для конференции в SMTL"
+
+# Речь для конференции. Озвучивается и показывается без изменений.
+CONFERENCE_SPEECH = (
+    "Уважаемые члены жюри и участники научной конференции СМТЛ!\n\n"
+    "Рад приветствовать вас на этом важном событии.\n\n"
+    "Сегодня команда разработчиков — Елисей Замотаев и Никита Бойковский — "
+    "официально представляет вам GyertAI: полноценный искусственный интеллект, "
+    "который станет сердцем умной колонки GyertStation, уже доступной здесь "
+    "к предзаказу за 20 000 рублей, и будущего Gyert Messenger.\n\n"
+    "Желаю вам ярких открытий и вдохновения!"
+)
+
+# Юридическая информация: показывается в тексте, но НЕ озвучивается.
+CONFERENCE_LEGAL = (
+    "GyertAI и вся его экосистема независимы от СМТЛ и принадлежат исключительно "
+    "Елисею Замотаеву и Никите Бойковскому."
+)
 
 def get_history(session_id: str) -> list:
     cursor.execute("SELECT history FROM sessions WHERE session_id = ?", (session_id,))
@@ -97,26 +134,65 @@ async def speech_to_text(audio_path: str) -> str:
         )
     return str(transcription).strip()
 
+# Эмодзи, пиктограммы и служебные символы, которые не нужно озвучивать
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002B00-\U00002BFF"
+    "\U0000FE0F"
+    "\U0000200D"
+    "]+",
+    flags=re.UNICODE,
+)
+# Символы разметки Markdown и подобные
+_MARKUP_RE = re.compile(r"[*#`_~|>\[\]{}<>]+")
+
 def prepare_text_for_speech(text: str) -> str:
-    # Убираем символы форматирования
-    clean = text.replace("*", "").replace("#", "").replace("`", "")
+    # Убираем эмодзи и служебные символы, чтобы речь была чистой и естественной
+    clean = _EMOJI_RE.sub(" ", str(text))
+    clean = _MARKUP_RE.sub(" ", clean)
     # Исправляем произношение бренда на правильное русское звучание
     clean = re.sub(r'Gyert\s*AI', 'Герт Эй Ай', clean, flags=re.IGNORECASE)
     clean = re.sub(r'GyertStation', 'Герт Стейшн', clean, flags=re.IGNORECASE)
     clean = re.sub(r'Gyert', 'Герт', clean, flags=re.IGNORECASE)
+    # Аббревиатуры
+    clean = re.sub(r'\bSMTL\b', 'Эс Эм Тэ Эл', clean)
     clean = re.sub(r'СМТЛ', 'Эс Эм Тэ Эл', clean)
-    return clean
+    # Ударение в имени: Елисе́й (на последний слог)
+    clean = re.sub(r'Елисей', 'Елисе\u0301й', clean)
+    # Приводим пробелы и переносы строк к аккуратному виду
+    clean = re.sub(r'\s*\n+\s*', ' ', clean)
+    clean = re.sub(r'[ \t]+', ' ', clean)
+    return clean.strip()
+
+async def _edge_tts_save(speech_text: str, output_path: str):
+    communicate = edge_tts.Communicate(
+        speech_text, JARVIS_VOICE, rate=JARVIS_RATE, pitch=JARVIS_PITCH
+    )
+    await asyncio.wait_for(communicate.save(output_path), timeout=20.0)
 
 async def text_to_speech(text: str, output_path: str):
-    speech_text = prepare_text_for_speech(text)
-    try:
-        # Мужской глубокий голос Дмитрия (в стиле Джарвиса)
-        communicate = edge_tts.Communicate(speech_text, JARVIS_VOICE, rate="-3%", pitch="-6Hz")
-        await asyncio.wait_for(communicate.save(output_path), timeout=10.0)
-    except Exception as e:
-        print(f"Edge-TTS недоступен ({e}), используем резервный синтез...")
-        loop = asyncio.get_event_loop()
-        def _fallback():
-            tts = gTTS(text=speech_text, lang="ru")
-            tts.save(output_path)
-        await loop.run_in_executor(None, _fallback)
+    speech_text = prepare_text_for_speech(text) or "Готово."
+
+    # Edge-TTS иногда отвечает пустым аудио (особенно при частых запросах) —
+    # делаем несколько попыток с паузой, чтобы вместо женского резервного
+    # голоса всё же прозвучал голос Джарвиса.
+    last_error = None
+    for attempt in range(3):
+        try:
+            await _edge_tts_save(speech_text, output_path)
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                return
+            last_error = "получен пустой аудиофайл"
+        except Exception as e:
+            last_error = e
+        await asyncio.sleep(1.0 * (attempt + 1))
+
+    print(f"Edge-TTS недоступен ({last_error}), используем резервный синтез...")
+    loop = asyncio.get_event_loop()
+    def _fallback():
+        tts = gTTS(text=speech_text, lang="ru")
+        tts.save(output_path)
+    await loop.run_in_executor(None, _fallback)
