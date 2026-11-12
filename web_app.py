@@ -283,8 +283,10 @@ HTML_TEMPLATE = """
                 <input class="field" id="r-pass" type="password" placeholder="Придумайте пароль">
                 <button class="btn btn-live" onclick="accRegister()">Создать аккаунт</button>
                 <div class="hint">
-                    Код приходит от нашего бота подтверждений в Telegram, поэтому сначала
-                    напишите ему любое сообщение, а затем укажите свой юзернейм здесь.
+                    Код приходит от бота подтверждений
+                    <a href="https://t.me/gyert_verification_bot" target="_blank"
+                       style="color: var(--accent);">@gyert_verification_bot</a>:
+                    напишите ему любое сообщение, затем укажите свой юзернейм здесь.
                 </div>
             </div>
         </div>

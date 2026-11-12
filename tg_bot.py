@@ -25,12 +25,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Диалог создания аккаунта: chat_id -> {"step": "login"|"password"|"promo", ...}
+# Диалог создания аккаунта: chat_id -> {"step": "login"|"password"|"code"|"promo", ...}
 AWAITING = {}
+
+# Бот подтверждений: только он присылает коды для входа в аккаунт.
+VERIFY_BOT_URL = "https://t.me/gyert_verification_bot"
 
 def get_main_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="👤 Аккаунт", callback_data="acc_show")
     builder.button(text="🧹 Очистить память", callback_data="clear_mem")
     builder.adjust(1)
     return builder.as_markup()
@@ -61,7 +63,7 @@ async def check_limit(message: types.Message) -> bool:
         return True
     await message.answer(
         f"⛔ Бесплатный лимит — {accounts.FREE_DAILY_LIMIT} запросов в день — исчерпан.\n\n"
-        "Оформите подписку в разделе «👤 Аккаунт»:\n"
+        "Оформите подписку по команде /account:\n"
         "• неделя — 1.5 GRAM\n"
         "• месяц — 4 GRAM\n\n"
         "Или активируйте промокод там же.",
@@ -79,8 +81,8 @@ async def cmd_start(message: types.Message):
         "Пиши мне любые задачи или отправляй голосовые сообщения — я отвечу голосом "
         "в стиле Джарвиса!\n\n"
         f"Без подписки доступно {accounts.FREE_DAILY_LIMIT} запросов в день. "
-        "Создать аккаунт, активировать промокод или оформить подписку — в разделе "
-        "«👤 Аккаунт».",
+        "Создать аккаунт, активировать промокод или оформить подписку — по команде "
+        "/account.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
@@ -108,8 +110,9 @@ def account_text(state, username):
     if not state or not state["login"]:
         return (
             "👤 <b>Аккаунт GyertAI</b>\n\n"
-            "Аккаунт создаётся по вашему юзернейму в Telegram: придумываете логин и пароль — "
-            "и входите с ними на сайте.\n\n"
+            "Аккаунт создаётся по вашему юзернейму в Telegram: придумываете логин и "
+            "пароль, подтверждаете кодом из бота подтверждений — и входите с этими "
+            "данными на сайте.\n\n"
             f"Без подписки доступно {accounts.FREE_DAILY_LIMIT} запросов в день."
         )
     if state["subscribed"]:
@@ -137,16 +140,35 @@ async def show_account(event):
     else:
         await event.answer(text, parse_mode="HTML", reply_markup=markup)
 
+def code_keyboard():
+    """Кнопки на время ожидания кода: переход в бот подтверждений и повтор отправки."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔐 Открыть бот подтверждений", url=VERIFY_BOT_URL)
+    builder.button(text="↻ Отправить код ещё раз", callback_data="acc_resend")
+    builder.adjust(1)
+    return builder.as_markup()
+
+async def send_code(message: types.Message, username: str):
+    """Просит accounts отправить код и объясняет, где его взять."""
+    ok, result = await asyncio.to_thread(accounts.send_login_code, username)
+    if ok:
+        text = (
+            "🔐 Код подтверждения отправлен в бот подтверждений.\n\n"
+            "Откройте его по кнопке ниже и пришлите сюда 6 цифр из сообщения. "
+            "Код действует 10 минут."
+        )
+    else:
+        text = (
+            f"⚠️ {result}\n\n"
+            "Откройте бот подтверждений по кнопке ниже, отправьте ему любое сообщение "
+            "и нажмите «Отправить код ещё раз»."
+        )
+    await message.answer(text, reply_markup=code_keyboard())
+
 @dp.message(Command("account"))
 async def cmd_account(message: types.Message):
     remember_user(message)
     await show_account(message)
-
-@dp.callback_query(F.data == "acc_show")
-async def cb_account(callback: types.CallbackQuery):
-    remember_user(callback)
-    await callback.answer()
-    await show_account(callback)
 
 @dp.callback_query(F.data == "acc_create")
 async def cb_account_create(callback: types.CallbackQuery):
@@ -157,11 +179,26 @@ async def cb_account_create(callback: types.CallbackQuery):
             "Сначала задайте юзернейм в настройках Telegram — он нужен для входа на сайте."
         )
         return
-    AWAITING[_chat_id(callback)] = {"step": "login", "login": None}
+    AWAITING[_chat_id(callback)] = {"step": "login", "login": None, "password": None}
     await callback.message.answer(
         "Придумайте логин для входа на сайте: 3–32 символа, латиница, цифры "
         "и подчёркивание.\n\nДля отмены напишите «отмена»."
     )
+
+@dp.callback_query(F.data == "acc_resend")
+async def cb_account_resend(callback: types.CallbackQuery):
+    username = accounts.normalize_username(remember_user(callback) or "")
+    await callback.answer()
+    if not username:
+        await callback.message.answer(
+            "Сначала задайте юзернейм в настройках Telegram — он нужен для входа на сайте."
+        )
+        return
+    state = AWAITING.get(_chat_id(callback))
+    if not state or state["step"] != "code":
+        await callback.message.answer("Начните заново: /account → «Создать аккаунт».")
+        return
+    await send_code(callback.message, username)
 
 @dp.callback_query(F.data == "acc_promo")
 async def cb_account_promo(callback: types.CallbackQuery):
@@ -221,18 +258,38 @@ async def handle_account_input(message: types.Message):
         await message.answer("Теперь придумайте пароль (не короче 6 символов).")
         return
 
-    username = remember_user(message)
-    ok, result = accounts.create_account(username or "", state["login"], text)
-    AWAITING.pop(_chat_id(message), None)
-    if ok:
+    if state["step"] == "password":
+        if len(text) < 6:
+            await message.answer("Пароль должен быть не короче 6 символов.")
+            return
+        state["password"] = text
+        state["step"] = "code"
+        await send_code(message, remember_user(message) or "")
+        return
+
+    # Остался шаг с кодом подтверждения из бота подтверждений.
+    if not re.match(r"^\d{6}$", text):
         await message.answer(
-            f"✅ {result}\n\nЛогин: <b>{html.escape(state['login'])}</b>\n"
-            "С этими данными можно войти на сайте GyertAI.",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(),
+            "Пришлите 6 цифр из сообщения бота подтверждений.",
+            reply_markup=code_keyboard(),
         )
-    else:
-        await message.answer(f"⚠️ {result}")
+        return
+
+    username = remember_user(message)
+    ok, result = await asyncio.to_thread(
+        accounts.register, username or "", text, state["login"], state["password"]
+    )
+    if not ok:
+        await message.answer(f"⚠️ {result}", reply_markup=code_keyboard())
+        return
+
+    AWAITING.pop(_chat_id(message), None)
+    await message.answer(
+        f"✅ {result}\n\nЛогин: <b>{html.escape(state['login'])}</b>\n"
+        "С этими данными можно войти на сайте GyertAI.",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard(),
+    )
 
 # Секретная активация речи на конференции: только точное сообщение,
 # с полным совпадением регистра, пробелов и написания.
