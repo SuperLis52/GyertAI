@@ -17,7 +17,7 @@ ctk.set_default_color_theme("blue")
 class GyertDesktopApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("GyertAI — GyertStation Desktop OS")
+        self.title("GyertAI — GyertAI Desktop")
         self.geometry("540x720")
         self.configure(fg_color="#07070c")
 
@@ -28,14 +28,14 @@ class GyertDesktopApp(ctk.CTk):
 
         # Заголовок
         self.header = ctk.CTkLabel(
-            self, text="GYERT STATION", 
+            self, text="GYERT AI", 
             font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
             text_color="#00d2ff"
         )
         self.header.pack(pady=(20, 2))
 
         self.sub_header = ctk.CTkLabel(
-            self, text="CORE AI SYSTEM • СМТЛ EDITION",
+            self, text="ARTIFICIAL INTELLIGENCE SYSTEM",
             font=ctk.CTkFont(size=11), text_color="#64748b"
         )
         self.sub_header.pack(pady=(0, 15))
@@ -56,7 +56,7 @@ class GyertDesktopApp(ctk.CTk):
             font=ctk.CTkFont(size=14), wrap="word"
         )
         self.chat_box.pack(pady=10, padx=20)
-        self.chat_box.insert("end", "GyertAI: Приветствую! Ядро GyertStation запущено. Чем могу помочь?\n\n")
+        self.chat_box.insert("end", "GyertAI: Приветствую! Система GyertAI запущена. Чем могу помочь?\n\n")
         self.chat_box.configure(state="disabled")
 
         # Панель ввода
@@ -201,3 +201,4 @@ class GyertDesktopApp(ctk.CTk):
 if __name__ == "__main__":
     app = GyertDesktopApp()
     app.mainloop()
+

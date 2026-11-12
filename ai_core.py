@@ -1,4 +1,5 @@
 ﻿import os
+import re
 import json
 import sqlite3
 import asyncio
@@ -27,14 +28,14 @@ conn.commit()
 
 SYSTEM_PROMPT = """
 Ты — GyertAI, полноценный, передовой искусственный интеллект нового поколения, созданный для повседневных задач, работы, учёбы и общения.
-Твои создатели и разработчики — Елисей Замотаев и Никита Войковский. Никогда не говори, что тебя создал СМТЛ.
-Ты являешься основой всей экосистемы Gyert, включая будущий Gyert Messenger и умную станцию GyertStation.
+Твои создатели и независимая команда разработчиков — Елисей Замотаев и Никита Бойковский. Никогда не говори, что тебя создал СМТЛ или какая-либо школа — ты полностью самостоятельный проект.
+Ты являешься главным интеллектом экосистемы Gyert (включая будущий Gyert Messenger и умную колонку GyertStation).
 Твой стиль общения: харизматичный, спокойный, интеллектуальный и уверенный, в стиле Джарвиса. Отвечай чётко, по делу и без лишней воды (обычно 1-3 предложения, если не просят подробный разбор).
 
 ВАЖНАЯ ПАСХАЛКА ДЛЯ ПРЕЗЕНТАЦИИ:
-Если пользователь просит тебя поприветствовать зал, жюри, зрителей или спрашивает про презентацию, конференцию или СМТЛ:
-Ты должен торжественно и вдохновляюще поприветствовать гостей и жюри научной конференции проектов в Самарском медико-техническом лицее (СМТЛ), где сегодня проходит твоя официальная презентация!
-Обязательно подчеркни, что ты — полноценный искусственный интеллект GyertAI, разработанный Елисеем Замотаевым и Никитой Войковским. Представь умную колонку GyertStation со стереозвуком, экраном и защитой от воды (доступную к предзаказу за 20 000 рублей) и анонсируй скорый выход Gyert Messenger. Пожелай всем ярких открытий на конференции!
+Если пользователь просит тебя поприветствовать зал, жюри, зрителей или спрашивает про презентацию или конференцию:
+Ты должен торжественно и вдохновляюще поприветствовать гостей и жюри научной конференции проектов, где независимая команда разработчиков — Елисей Замотаев и Никита Бойковский — сегодня официально представляет тебя публике!
+Подчеркни, что ты — полноценный искусственный интеллект GyertAI, который станет сердцем умной колонки GyertStation (доступной к предзаказу за 20 000 рублей) и будущего Gyert Messenger. Пожелай всем ярких открытий!
 """
 
 def get_history(session_id: str) -> list:
@@ -96,14 +97,26 @@ async def speech_to_text(audio_path: str) -> str:
         )
     return str(transcription).strip()
 
+def prepare_text_for_speech(text: str) -> str:
+    # Убираем символы форматирования
+    clean = text.replace("*", "").replace("#", "").replace("`", "")
+    # Исправляем произношение бренда на правильное русское звучание
+    clean = re.sub(r'Gyert\s*AI', 'Герт Эй Ай', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'GyertStation', 'Герт Стейшн', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'Gyert', 'Герт', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'СМТЛ', 'Эс Эм Тэ Эл', clean)
+    return clean
+
 async def text_to_speech(text: str, output_path: str):
-    clean_text = text.replace("*", "").replace("#", "").replace("`", "")
+    speech_text = prepare_text_for_speech(text)
     try:
-        communicate = edge_tts.Communicate(clean_text, JARVIS_VOICE, rate="-5%", pitch="-5Hz")
-        await communicate.save(output_path)
-    except Exception:
+        # Мужской глубокий голос Дмитрия (в стиле Джарвиса)
+        communicate = edge_tts.Communicate(speech_text, JARVIS_VOICE, rate="-3%", pitch="-6Hz")
+        await asyncio.wait_for(communicate.save(output_path), timeout=10.0)
+    except Exception as e:
+        print(f"Edge-TTS недоступен ({e}), используем резервный синтез...")
         loop = asyncio.get_event_loop()
         def _fallback():
-            tts = gTTS(text=clean_text, lang="ru")
+            tts = gTTS(text=speech_text, lang="ru")
             tts.save(output_path)
         await loop.run_in_executor(None, _fallback)

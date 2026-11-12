@@ -112,7 +112,7 @@ HTML_TEMPLATE = """
 
     <!-- Полноэкранный Live-режим -->
     <div class="live-overlay" id="live-overlay">
-        <div class="live-header"><h2>GYERT STATION</h2><p>LIVE VOICE MODE • СМТЛ</p></div>
+        <div class="live-header"><h2>GYERT AI</h2><p>LIVE VOICE ASSISTANT</p></div>
         <div style="display:flex; flex-direction:column; align-items:center;">
             <div class="orb" id="orb" onclick="toggleRecording()"></div>
             <div class="live-status" id="live-status">Нажмите на сферу, чтобы начать говорить</div>
@@ -247,3 +247,4 @@ async def api_esp32(file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
