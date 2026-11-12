@@ -173,14 +173,18 @@ async def _edge_tts_save(speech_text: str, output_path: str):
     )
     await asyncio.wait_for(communicate.save(output_path), timeout=20.0)
 
+# Сервис edge-tts троттлит частые запросы и отвечает ошибкой NoAudioReceived.
+# При обычной переписке (запрос раз в несколько секунд) первая попытка проходит
+# за ~2 секунды, но при всплеске сообщений нужны паузы. Поэтому между попытками
+# ждём всё дольше — это переживает и одиночные сбои, и серии подряд.
+TTS_ATTEMPTS = 6
+TTS_RETRY_DELAYS = (1.0, 2.0, 4.0, 6.0, 8.0)
+
 async def text_to_speech(text: str, output_path: str):
     speech_text = prepare_text_for_speech(text) or "Готово."
 
-    # Edge-TTS иногда отвечает пустым аудио (особенно при частых запросах) —
-    # делаем несколько попыток с паузой, чтобы вместо женского резервного
-    # голоса всё же прозвучал голос Джарвиса.
     last_error = None
-    for attempt in range(3):
+    for attempt in range(TTS_ATTEMPTS):
         try:
             await _edge_tts_save(speech_text, output_path)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
@@ -188,9 +192,13 @@ async def text_to_speech(text: str, output_path: str):
             last_error = "получен пустой аудиофайл"
         except Exception as e:
             last_error = e
-        await asyncio.sleep(1.0 * (attempt + 1))
+        if attempt < TTS_ATTEMPTS - 1:
+            await asyncio.sleep(TTS_RETRY_DELAYS[min(attempt, len(TTS_RETRY_DELAYS) - 1)])
 
-    print(f"Edge-TTS недоступен ({last_error}), используем резервный синтез...")
+    print(
+        f"[TTS] Голос Джарвиса недоступен после {TTS_ATTEMPTS} попыток ({last_error}). "
+        f"Включаю резервный синтез — он звучит ЖЕНСКИМ голосом."
+    )
     loop = asyncio.get_event_loop()
     def _fallback():
         tts = gTTS(text=speech_text, lang="ru")
