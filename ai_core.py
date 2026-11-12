@@ -31,8 +31,15 @@ load_dotenv(ENV_PATH, encoding="utf-8-sig")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 CURRENT_MODEL = "qwen/qwen3.8-27b"
 
-# Голос в стиле Джарвиса: глубокий мужской голос Дмитрия, чуть медленнее и ниже
-JARVIS_VOICE = "ru-RU-DmitryNeural"
+# Голос в стиле Джарвиса: глубокий мужской голос, чуть медленнее и ниже обычного.
+# Основной — русский Дмитрий, запасные — мужские многоязычные голоса, которые
+# корректно читают по-русски. Женских голосов здесь нет сознательно: резерв
+# никогда не должен звучать женским голосом.
+JARVIS_VOICES = (
+    "ru-RU-DmitryNeural",
+    "en-US-BrianMultilingualNeural",
+    "it-IT-GiuseppeMultilingualNeural",
+)
 JARVIS_RATE = "-8%"
 JARVIS_PITCH = "-15Hz"
 
@@ -167,37 +174,87 @@ def prepare_text_for_speech(text: str) -> str:
     clean = re.sub(r'[ \t]+', ' ', clean)
     return clean.strip()
 
-async def _edge_tts_save(speech_text: str, output_path: str):
+async def _edge_tts_save(speech_text: str, output_path: str, voice: str):
     communicate = edge_tts.Communicate(
-        speech_text, JARVIS_VOICE, rate=JARVIS_RATE, pitch=JARVIS_PITCH
+        speech_text, voice, rate=JARVIS_RATE, pitch=JARVIS_PITCH
     )
-    await asyncio.wait_for(communicate.save(output_path), timeout=20.0)
+    await asyncio.wait_for(communicate.save(output_path), timeout=TTS_TIMEOUT)
 
-# Сервис edge-tts троттлит частые запросы и отвечает ошибкой NoAudioReceived.
-# При обычной переписке (запрос раз в несколько секунд) первая попытка проходит
-# за ~2 секунды, но при всплеске сообщений нужны паузы. Поэтому между попытками
-# ждём всё дольше — это переживает и одиночные сбои, и серии подряд.
-TTS_ATTEMPTS = 6
-TTS_RETRY_DELAYS = (1.0, 2.0, 4.0, 6.0, 8.0)
+# Сервис edge-tts нестабилен: запрос наугад падает с ServerTimeoutError или
+# NoAudioReceived, причём сбой не привязан к конкретному голосу. Раньше голоса
+# перебирались по очереди, и каждая неудачная попытка съедала до 12 секунд ожидания —
+# из-за этого 18-секундный ответ озвучивался почти 30 секунд. Теперь голоса
+# запускаются одновременно и берётся первый готовый результат: зависший голос
+# больше не задерживает ответ.
+TTS_TIMEOUT = 12.0
+TTS_ROUNDS = 2
+# Фора основному голосу перед запасными, чтобы он выигрывал, когда сервис в порядке.
+TTS_STAGGER = 0.8
+
+# Голос закрепляется за тем, который сработал: иначе из-за случайных сбоев
+# ассистент перескакивал бы между голосами прямо посреди диалога.
+_preferred_voice = JARVIS_VOICES[0]
+
+async def _edge_tts_after(delay: float, speech_text: str, output_path: str, voice: str):
+    if delay:
+        await asyncio.sleep(delay)
+    await _edge_tts_save(speech_text, output_path, voice)
+
+async def _race_tts(speech_text: str, output_path: str, voices):
+    """Синтезирует речь всеми голосами сразу и возвращает первый удачный.
+
+    Основной голос стартует сразу, запасные — с небольшой задержкой: так голос
+    остаётся одинаковым от сообщения к сообщению, но зависший голос всё равно
+    не тормозит ответ дольше, чем на эту задержку.
+    """
+    tasks = {}
+    part_paths = {}
+    for i, voice in enumerate(voices):
+        part = f"{output_path}.{i}.part"
+        part_paths[voice] = part
+        tasks[asyncio.create_task(_edge_tts_after(i * TTS_STAGGER, speech_text, part, voice))] = voice
+
+    try:
+        while tasks:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                voice = tasks.pop(task)
+                part = part_paths[voice]
+                try:
+                    task.result()
+                except Exception:
+                    continue
+                if os.path.exists(part) and os.path.getsize(part) > 1000:
+                    os.replace(part, output_path)
+                    return voice
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for part in part_paths.values():
+            if os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+    return None
 
 async def text_to_speech(text: str, output_path: str):
+    global _preferred_voice
     speech_text = prepare_text_for_speech(text) or "Готово."
+    order = (_preferred_voice,) + tuple(v for v in JARVIS_VOICES if v != _preferred_voice)
 
-    last_error = None
-    for attempt in range(TTS_ATTEMPTS):
-        try:
-            await _edge_tts_save(speech_text, output_path)
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                return
-            last_error = "получен пустой аудиофайл"
-        except Exception as e:
-            last_error = e
-        if attempt < TTS_ATTEMPTS - 1:
-            await asyncio.sleep(TTS_RETRY_DELAYS[min(attempt, len(TTS_RETRY_DELAYS) - 1)])
+    for attempt in range(TTS_ROUNDS):
+        voice = await _race_tts(speech_text, output_path, order)
+        if voice:
+            _preferred_voice = voice
+            return
+        if attempt < TTS_ROUNDS - 1:
+            await asyncio.sleep(0.5)
 
     print(
-        f"[TTS] Голос Джарвиса недоступен после {TTS_ATTEMPTS} попыток ({last_error}). "
-        f"Включаю резервный синтез — он звучит ЖЕНСКИМ голосом."
+        "[TTS] Мужской голос недоступен. Включаю резервный синтез — "
+        "он звучит ЖЕНСКИМ голосом."
     )
     loop = asyncio.get_event_loop()
     def _fallback():

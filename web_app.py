@@ -232,6 +232,7 @@ HTML_TEMPLATE = """
 
     const sessionId = "web_" + Math.random().toString(36).substring(7);
     let mediaRecorder, audioChunks = [], isRecording = false, typingRow = null;
+    let mediaStream = null, isBusy = false;
 
     function scrollDown() {
         const area = document.getElementById('chat-box');
@@ -304,41 +305,73 @@ HTML_TEMPLATE = """
         }
     }
 
-    function openLive() { liveOverlay.classList.add('active'); }
+    function openLive() {
+        liveOverlay.classList.add('active');
+        resetLive();
+    }
+
     function closeLive() {
-        if (isRecording && mediaRecorder) mediaRecorder.stop();
+        if (isRecording && mediaRecorder) { try { mediaRecorder.stop(); } catch (e) {} }
         isRecording = false;
+        isBusy = false;
+        stopStream();
         audioPlayer.pause();
+        audioPlayer.removeAttribute('src');
         liveOverlay.classList.remove('active');
+    }
+
+    function stopStream() {
+        if (mediaStream) {
+            mediaStream.getTracks().forEach(t => t.stop());
+            mediaStream = null;
+        }
+    }
+
+    function resetLive() {
+        setOrb('', 'Нажмите на сферу, чтобы начать говорить');
+        liveSubtitles.innerText = 'Ожидаю голосовую команду...';
     }
 
     function setOrb(state, text) {
         orb.className = 'orb ' + state;
         liveStatus.innerText = text;
     }
+
     audioPlayer.onplay = () => setOrb('speaking', 'GyertAI говорит...');
-    audioPlayer.onended = () => setOrb('', 'Нажмите на сферу, чтобы ответить');
+    audioPlayer.onended = () => {
+        if (liveOverlay.classList.contains('active')) resetLive();
+    };
 
     async function toggleRecording() {
+        if (isBusy) return;
+
         if (!isRecording) {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
+                mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+                mediaRecorder = new MediaRecorder(mediaStream, mime ? { mimeType: mime } : undefined);
                 audioChunks = [];
-                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) audioChunks.push(e.data); };
                 mediaRecorder.onstop = async () => {
-                    await sendVoice(new Blob(audioChunks, { type: 'audio/webm' }));
+                    stopStream();
+                    const type = mediaRecorder.mimeType || 'audio/webm';
+                    const blob = new Blob(audioChunks, { type });
+                    audioChunks = [];
+                    await sendVoice(blob);
                 };
                 mediaRecorder.start();
                 isRecording = true;
-                setOrb('listening', 'Слушаю вас... (нажмите на сферу для отправки)');
+                setOrb('listening', 'Слушаю вас... нажмите на сферу, чтобы отправить');
             } catch (e) {
-                alert("Разрешите доступ к микрофону в браузере!");
+                stopStream();
+                liveSubtitles.innerText = 'Нет доступа к микрофону. Разрешите его в браузере.';
+                setOrb('', 'Микрофон недоступен');
             }
         } else {
-            mediaRecorder.stop();
             isRecording = false;
-            setOrb('thinking', 'Обработка речи и генерация ответа...');
+            isBusy = true;
+            setOrb('thinking', 'Обрабатываю речь и готовлю ответ...');
+            try { mediaRecorder.stop(); } catch (e) {}
         }
     }
 
@@ -350,18 +383,26 @@ HTML_TEMPLATE = """
             const res = await fetch('/api/voice', { method: 'POST', body: fd });
             const data = await res.json();
             if (data.error) {
-                liveSubtitles.innerText = "Ошибка: " + data.error;
-                setOrb('', 'Сбой');
+                liveSubtitles.innerText = 'Ошибка: ' + data.error;
+                setOrb('', 'Сбой — нажмите на сферу и повторите');
                 return;
             }
             liveSubtitles.innerText = data.reply;
             if (data.audio_url) {
                 audioPlayer.src = data.audio_url;
-                audioPlayer.play();
+                try {
+                    await audioPlayer.play();
+                } catch (e) {
+                    setOrb('', 'Ответ не воспроизвёлся — нажмите на сферу ещё раз');
+                }
+            } else {
+                setOrb('', 'Нажмите на сферу, чтобы продолжить');
             }
         } catch (e) {
-            liveSubtitles.innerText = "Ошибка соединения: " + e;
-            setOrb('', 'Сбой');
+            liveSubtitles.innerText = 'Ошибка соединения: ' + e;
+            setOrb('', 'Сбой — нажмите на сферу и повторите');
+        } finally {
+            isBusy = false;
         }
     }
 </script>

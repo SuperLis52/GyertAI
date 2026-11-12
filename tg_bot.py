@@ -4,7 +4,7 @@ import asyncio
 import html
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 from ai_core import (
@@ -67,6 +67,30 @@ async def handle_conference_speech(message: types.Message):
         )
     except Exception as e:
         await message.answer(f"⚠️ Не удалось озвучить речь: {e}")
+    finally:
+        if os.path.exists(out_mp3):
+            os.remove(out_mp3)
+
+# /tts <текст> — озвучить произвольный текст голосом Джарвиса, без обращения к ИИ
+@dp.message(Command("tts"))
+async def cmd_tts(message: types.Message):
+    text = (message.text or "").partition(" ")[2].strip()
+    if not text:
+        await message.answer(
+            "Напишите текст после команды, например:\n"
+            "<code>/tts Добрый день, я GyertAI</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
+    os.makedirs("temp_audio", exist_ok=True)
+    out_mp3 = os.path.join("temp_audio", f"tts_{uuid.uuid4()}.mp3")
+    try:
+        await text_to_speech(text, out_mp3)
+        await message.answer_audio(types.FSInputFile(out_mp3), title="GyertAI — озвучка")
+    except Exception as e:
+        await message.answer(f"⚠️ Не удалось озвучить текст: {e}")
     finally:
         if os.path.exists(out_mp3):
             os.remove(out_mp3)
