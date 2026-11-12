@@ -80,6 +80,20 @@ async def handle_text(message: types.Message):
         await message.answer(reply, reply_markup=get_main_keyboard())
     except Exception as e:
         await message.answer(f"⚠️ Ошибка ядра: {e}")
+        return
+
+    # Озвучиваем ответ голосом Джарвиса и присылаем его аудиосообщением
+    os.makedirs("temp_audio", exist_ok=True)
+    out_mp3 = os.path.join("temp_audio", f"out_{uuid.uuid4()}.mp3")
+    try:
+        await bot.send_chat_action(chat_id=chat_id, action="record_voice")
+        await text_to_speech(reply, out_mp3)
+        await message.answer_audio(types.FSInputFile(out_mp3), title="GyertAI")
+    except Exception as e:
+        await message.answer(f"⚠️ Не удалось озвучить ответ: {e}")
+    finally:
+        if os.path.exists(out_mp3):
+            os.remove(out_mp3)
 
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
