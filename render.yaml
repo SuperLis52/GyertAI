@@ -19,3 +19,6 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL
         value: https://gyertai.onrender.com
+      # Промокоды: "КОД:дней,КОД:дней". Значение задаётся в панели Render.
+      - key: PROMO_CODES
+        sync: false

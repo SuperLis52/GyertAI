@@ -36,9 +36,21 @@ VERIFY_BOT_URL = "https://t.me/gyert_verification_bot"
 SUPPORT_URL = "https://t.me/skyp_t0n"
 SUPPORT_HANDLE = "@skyp_t0n"
 
+# Мини-приложение внутри бота: та же страница, что и на сайте, но открывается
+# прямо в Telegram — со своей шапкой, чатом, аккаунтом и подпиской.
+MINI_APP_URL = f"{accounts.PUBLIC_BASE_URL}/app" if accounts.PUBLIC_BASE_URL else ""
+MINI_APP_TITLE = "🚀 Открыть GyertAI"
+
+def add_app_button(builder: InlineKeyboardBuilder):
+    """Добавляет кнопку запуска мини-приложения, если адрес сайта настроен."""
+    if MINI_APP_URL:
+        builder.button(text=MINI_APP_TITLE, web_app=types.WebAppInfo(url=MINI_APP_URL))
+    return builder
+
 def get_main_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🧹 Очистить память", callback_data="clear_mem")
+    add_app_button(builder)
     builder.adjust(1)
     return builder.as_markup()
 
@@ -87,7 +99,8 @@ async def cmd_start(message: types.Message):
         "в стиле Джарвиса!\n\n"
         f"Без подписки доступно {accounts.FREE_DAILY_LIMIT} запросов в день. "
         "Создать аккаунт, активировать промокод или оформить подписку — по команде "
-        "/account. Все команды и контакт поддержки — в /help.",
+        "/account. Все команды и контакт поддержки — в /help.\n\n"
+        "🚀 Полный интерфейс — в приложении внутри бота: кнопка ниже или /app.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
@@ -96,12 +109,14 @@ async def cmd_start(message: types.Message):
 async def cmd_help(message: types.Message):
     remember_user(message)
     builder = InlineKeyboardBuilder()
+    add_app_button(builder)
     builder.button(text=f"🆘 Поддержка: {SUPPORT_HANDLE}", url=SUPPORT_URL)
     builder.button(text="👤 Аккаунт и подписка", callback_data="help_account")
     builder.adjust(1)
     await message.answer(
         "🧭 <b>GyertAI — команды и поддержка</b>\n\n"
         "/start — приветствие и знакомство\n"
+        "/app — приложение GyertAI прямо внутри Telegram\n"
         "/draw <i>описание</i> — нарисовать картинку, например "
         "<code>/draw кот в космическом шлеме</code>\n"
         "/tts <i>текст</i> — озвучить текст голосом Джарвиса\n"
@@ -113,6 +128,23 @@ async def cmd_help(message: types.Message):
         "или возникла любая ошибка.",
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=builder.as_markup(),
+    )
+
+@dp.message(Command("app"))
+async def cmd_app(message: types.Message):
+    remember_user(message)
+    if not MINI_APP_URL:
+        await message.answer("Приложение пока недоступно: не настроен адрес сайта.")
+        return
+    builder = InlineKeyboardBuilder()
+    add_app_button(builder)
+    builder.adjust(1)
+    await message.answer(
+        "🚀 <b>GyertAI в Telegram</b>\n\n"
+        "Откройте приложение — это тот же ассистент, но с полным интерфейсом прямо "
+        "внутри Telegram: чат, голос, рисование картинок, аккаунт и подписка.",
+        parse_mode="HTML",
         reply_markup=builder.as_markup(),
     )
 
@@ -521,10 +553,21 @@ async def start_web_server():
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
+    # Кнопка приложения рядом с полем ввода — встроенное приложение вместо бота-как-чата
+    if MINI_APP_URL:
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=types.MenuButtonWebApp(
+                    text="GyertAI", web_app=types.WebAppInfo(url=MINI_APP_URL)
+                )
+            )
+        except Exception as e:
+            print("Не удалось установить кнопку приложения:", e)
     # Меню команд в Telegram: их видно по кнопке «/» и в справке /help
     try:
         await bot.set_my_commands([
             types.BotCommand(command="start", description="Приветствие"),
+            types.BotCommand(command="app", description="Приложение GyertAI"),
             types.BotCommand(command="draw", description="Нарисовать картинку"),
             types.BotCommand(command="tts", description="Озвучить текст"),
             types.BotCommand(command="account", description="Аккаунт и подписка"),

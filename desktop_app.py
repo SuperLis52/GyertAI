@@ -1,4 +1,15 @@
 import os
+import sys
+
+# Установленное приложение живёт в Program Files, куда писать нельзя, поэтому
+# база памяти и временные аудиофайлы хранятся в профиле пользователя.
+if getattr(sys, "frozen", False):
+    _data_dir = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "GyertAI"
+    )
+    os.makedirs(_data_dir, exist_ok=True)
+    os.chdir(_data_dir)
+
 import uuid
 import math
 import asyncio
@@ -60,6 +71,16 @@ ORB_PALETTE = {
     "speaking": {"ring": "#34d399", "core": "#10b981", "glow": "#08301f", "status": "GyertAI говорит..."},
 }
 ORB_SPEED = {"idle": 0.09, "listening": 0.34, "thinking": 0.22, "speaking": 0.45}
+
+# Радиусы вложенных кругов, из которых собрана сфера: дают объём вместо плоского круга
+SPHERE_RADII = (46, 39, 30, 20)
+
+
+def _blend(color_a: str, color_b: str, t: float) -> str:
+    """Смешивает два цвета в формате #rrggbb: t=0 — первый, t=1 — второй."""
+    a = tuple(int(color_a[i:i + 2], 16) for i in (1, 3, 5))
+    b = tuple(int(color_b[i:i + 2], 16) for i in (1, 3, 5))
+    return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
 class GyertDesktopApp(ctk.CTk):
@@ -161,7 +182,12 @@ class GyertDesktopApp(ctk.CTk):
 
         self.orb_glow = self.canvas.create_oval(0, 0, 0, 0, fill=ORB_PALETTE["idle"]["glow"], outline="")
         self.orb_ring = self.canvas.create_oval(0, 0, 0, 0, fill="", outline=ORB_PALETTE["idle"]["ring"], width=2)
-        self.orb_core = self.canvas.create_oval(0, 0, 0, 0, fill=ORB_PALETTE["idle"]["core"], outline="")
+        # Сфера собрана из вложенных кругов: от тёмного края к светлому центру.
+        # Плюс блик — так она выглядит объёмной, а не плоским синим кругом.
+        self.orb_sphere = [
+            self.canvas.create_oval(0, 0, 0, 0, fill="", outline="") for _ in SPHERE_RADII
+        ]
+        self.orb_highlight = self.canvas.create_oval(0, 0, 0, 0, fill="#dffbff", outline="")
 
         self.status_label = ctk.CTkLabel(
             self, text=ORB_PALETTE["idle"]["status"],
@@ -305,9 +331,17 @@ class GyertDesktopApp(ctk.CTk):
         # Медленное встречное вращение дуг вокруг сферы
         self._spin = (self._spin + 0.9 + ORB_SPEED[self._orb_state] * 2) % 360
         scale = 1.0 + 0.045 * math.sin(self._phase)
-        self._set_oval(self.orb_glow, 88 * scale)
-        self._set_oval(self.orb_ring, 66 * scale)
-        self._set_oval(self.orb_core, 44 * scale)
+        self._set_oval(self.orb_glow, 92 * scale)
+        self._set_oval(self.orb_ring, 68 * scale)
+        for item, radius in zip(self.orb_sphere, SPHERE_RADII):
+            self._set_oval(item, radius * scale)
+        # Блик слева сверху: имитирует отражение света на сфере
+        highlight = 9 * scale
+        self.canvas.coords(
+            self.orb_highlight,
+            self._cx - 16 * scale - highlight, self._cy - 16 * scale - highlight,
+            self._cx - 16 * scale + highlight, self._cy - 16 * scale + highlight,
+        )
         self.canvas.itemconfig(self.hud_arc_a, start=self._spin)
         self.canvas.itemconfig(self.hud_arc_b, start=(200 - self._spin * 0.7) % 360)
         self.after(45, self._animate_orb)
@@ -318,9 +352,13 @@ class GyertDesktopApp(ctk.CTk):
     def set_orb_state(self, state: str, status_msg: str = None):
         self._orb_state = state if state in ORB_PALETTE else "idle"
         palette = ORB_PALETTE[self._orb_state]
-        self.canvas.itemconfig(self.orb_glow, fill=palette["glow"])
+        glow, core = palette["glow"], palette["core"]
+        self.canvas.itemconfig(self.orb_glow, fill=glow)
         self.canvas.itemconfig(self.orb_ring, outline=palette["ring"])
-        self.canvas.itemconfig(self.orb_core, fill=palette["core"])
+        # Четыре вложенных круга: от тёмного края к светлому центру
+        for item, step in zip(self.orb_sphere, (0.28, 0.52, 0.78, 1.0)):
+            self.canvas.itemconfig(item, fill=_blend(glow, core, step))
+        self.canvas.itemconfig(self.orb_highlight, fill=_blend(core, "#ffffff", 0.6))
         self.canvas.itemconfig(self.hud_arc_a, outline=palette["ring"])
         self.canvas.itemconfig(self.hud_arc_b, outline=palette["core"])
         self.status_label.configure(text=status_msg or palette["status"])

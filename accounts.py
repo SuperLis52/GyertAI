@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -24,7 +25,29 @@ DB_PATH = "gyert_memory.db"
 
 FREE_DAILY_LIMIT = 20            # бесплатных запросов в день
 CODE_TTL = 10 * 60               # сколько живёт 6-значный код подтверждения
-PROMO_CODES = {"GAI2027": 365}   # промокод -> дней бесплатного доступа
+
+
+def _load_promo_codes() -> dict:
+    """Промокоды читаем из .env, чтобы они не лежали в открытом виде в репозитории.
+
+    Формат переменной PROMO_CODES: "КОД_1:дней,КОД_2:дней".
+    """
+    codes = {}
+    for item in (os.environ.get("PROMO_CODES") or "").split(","):
+        code, _, days = item.partition(":")
+        code = code.strip()
+        if not code:
+            continue
+        try:
+            days = int(days.strip())
+        except ValueError:
+            continue
+        if days > 0:
+            codes[code.upper()] = days
+    return codes
+
+
+PROMO_CODES = _load_promo_codes()   # промокод -> дней бесплатного доступа
 PLANS = {                        # тариф -> (дней подписки, цена в GRAM)
     "week": (7, "1.5"),
     "month": (30, "4"),
@@ -177,6 +200,33 @@ def verify_chat_id_of(username: str):
         "SELECT verify_chat_id FROM users WHERE username = ?", (normalize_username(username),)
     ).fetchone()
     return row["verify_chat_id"] if row and row["verify_chat_id"] else None
+
+
+def telegram_user_from_init_data(init_data: str):
+    """Проверяет подпись Telegram WebApp и возвращает данные пользователя.
+
+    Telegram подписывает initData ключом, производным от токена бота: если подпись
+    сходится, данные не подделаны и мини-приложению можно доверять.
+    """
+    if not init_data or not BOT_TOKEN:
+        return None
+    try:
+        pairs = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+    except ValueError:
+        return None
+    received_hash = pairs.pop("hash", "")
+    if not received_hash:
+        return None
+
+    check_string = "\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+    calculated = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated, received_hash):
+        return None
+    try:
+        return json.loads(pairs.get("user") or "{}") or None
+    except ValueError:
+        return None
 
 
 # --- Регистрация и вход -------------------------------------------------------

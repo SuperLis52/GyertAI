@@ -4,7 +4,14 @@ import asyncio
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from ai_core import ask_gyert, image_url, speech_to_text, text_to_speech, clear_history
+from ai_core import (
+    ask_gyert,
+    image_url,
+    enhance_image_prompt,
+    speech_to_text,
+    text_to_speech,
+    clear_history,
+)
 import accounts
 
 app = FastAPI(title="GyertAI — Web & Station OS")
@@ -32,6 +39,7 @@ HTML_TEMPLATE = """
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GyertAI — независимый искусственный интеллект</title>
+<!--{{TELEGRAM_SDK}}-->
 <style>
     :root {
         --bg: #05070d;
@@ -195,11 +203,6 @@ HTML_TEMPLATE = """
         border-bottom-right-radius: 5px; box-shadow: 0 0 24px rgba(14, 165, 233, 0.3);
     }
     .bubble img { display: block; margin-top: 12px; max-width: 100%; border-radius: 12px; }
-    .live-image {
-        display: none; margin-top: 18px; max-width: min(72vw, 340px); max-height: 38vh;
-        border-radius: 18px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-    }
-    .live-image.show { display: block; }
     .typing span {
         display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%;
         background: var(--accent); opacity: 0.4; animation: blink 1.2s infinite;
@@ -251,39 +254,11 @@ HTML_TEMPLATE = """
     .authors a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--faint); }
     .authors a:hover { color: var(--accent); border-color: var(--accent); }
 
-    /* Полноэкранный Live-режим */
-    .live-overlay {
-        display: none; position: fixed; inset: 0; z-index: 100;
-        background: radial-gradient(circle at 50% 40%, #081521, #030509 70%);
-        flex-direction: column; align-items: center; justify-content: space-between;
-        padding: 46px 20px 36px;
-    }
-    .live-overlay.active { display: flex; }
-    .live-header { text-align: center; }
-    .live-header h2 { letter-spacing: 5px; color: var(--accent); font-size: 1.5rem; font-weight: 700; }
-    .live-header p { color: var(--muted); font-size: 0.74rem; margin-top: 6px; letter-spacing: 1.5px; }
-    .orb-stage { display: flex; flex-direction: column; align-items: center; gap: 26px; }
-    .orb {
-        width: 190px; height: 190px; border-radius: 50%; cursor: pointer;
-        background: radial-gradient(circle at 32% 30%, #67e8f9, #22d3ee 42%, #0369a1 82%, #02060f 100%);
-        box-shadow: 0 0 70px rgba(34, 211, 238, 0.45);
-        transition: 0.4s ease; animation: breathe 4s ease-in-out infinite;
-    }
-    .orb.listening { background: radial-gradient(circle at 32% 30%, #fecdd3, #fb7185 55%, #7f1d1d 100%); box-shadow: 0 0 90px rgba(251, 113, 133, 0.7); animation: pulse 1s infinite alternate; }
-    .orb.thinking { background: radial-gradient(circle at 32% 30%, #e9d5ff, #a855f7 60%, #3b0764 100%); box-shadow: 0 0 80px rgba(168, 85, 247, 0.65); animation: spin 1.6s infinite linear; }
-    .orb.speaking { background: radial-gradient(circle at 32% 30%, #d1fae5, #10b981 60%, #064e3b 100%); box-shadow: 0 0 95px rgba(16, 185, 129, 0.7); animation: pulse 0.45s infinite alternate; }
-    .live-status { color: var(--muted); font-size: 0.98rem; text-align: center; }
-    .live-subtitles { max-width: 720px; text-align: center; font-size: 1.15rem; line-height: 1.6; }
-    .btn-close-live {
-        background: rgba(255, 255, 255, 0.06); color: var(--text);
-        border: 1px solid var(--border); padding: 13px 30px; border-radius: 26px;
-        cursor: pointer; font-size: 0.95rem; font-family: inherit; transition: 0.2s;
-    }
-    .btn-close-live:hover { background: rgba(255, 255, 255, 0.12); }
+    /* Режим встроенного приложения Telegram */
+    body.in-app .topbar { padding: 10px 16px; }
+    body.in-app .btn-help { display: none; }
 
     @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-    @keyframes pulse { 0% { transform: scale(1.04); } 100% { transform: scale(1.2); } }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     @keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
     @keyframes scan { from { top: -160px; } to { top: 100%; } }
@@ -313,7 +288,6 @@ HTML_TEMPLATE = """
     <div class="top-btns">
         <button class="btn btn-clear" onclick="openAccount()">👤 Аккаунт</button>
         <button class="btn btn-clear" onclick="clearChat()">🧹 Очистить</button>
-        <button class="btn btn-live" onclick="openLive()">🎙 Live-сфера</button>
         <a class="btn btn-clear btn-help" href="https://t.me/skyp_t0n" target="_blank" rel="noopener">🆘 Support</a>
     </div>
 </header>
@@ -322,7 +296,7 @@ HTML_TEMPLATE = """
     <div class="chat-inner" id="chat-inner">
         <div class="row ai">
             <div class="avatar">AI</div>
-            <div class="bubble">Привет! Я GyertAI. Задайте любой вопрос текстом, включите <b>Live-сферу</b> в правом верхнем углу для голосового общения или нарисуйте картинку командой <b>/draw</b>.</div>
+            <div class="bubble">Привет! Я GyertAI. Задайте любой вопрос текстом, нажмите <b>🎙</b> у поля ввода для голосового общения или нарисуйте картинку командой <b>/draw</b>.</div>
         </div>
     </div>
 </main>
@@ -332,29 +306,17 @@ HTML_TEMPLATE = """
         <span>● Система онлайн</span>
         <span><b>/draw</b> описание — картинка</span>
         <span><b>/help</b> — команды и поддержка</span>
+        <span id="voice-status">🎙 Голосовой режим</span>
     </div>
     <div class="composer-inner">
         <input type="text" id="text-input" placeholder="Напишите сообщение или команду /draw..." onkeypress="if(event.key==='Enter') sendText()">
+        <button class="icon-btn" id="mic-btn" onclick="toggleVoice()" title="Голосовое сообщение">🎙</button>
         <button class="icon-btn" onclick="sendText()">➤</button>
     </div>
     <div class="authors">
         GYERT ETC. · GYERT ECOSYSTEM · ПОДДЕРЖКА
         <a href="https://t.me/skyp_t0n" target="_blank" rel="noopener">@skyp_t0n</a>
     </div>
-</div>
-
-<div class="live-overlay" id="live-overlay">
-    <div class="live-header">
-        <h2>GYERT AI</h2>
-        <p>LIVE VOICE ASSISTANT</p>
-    </div>
-    <div class="orb-stage">
-        <div class="orb" id="orb" onclick="toggleRecording()"></div>
-        <div class="live-status" id="live-status">Нажмите на сферу, чтобы начать говорить</div>
-    </div>
-    <div class="live-subtitles" id="live-subtitles">Ожидаю голосовую команду...</div>
-    <img class="live-image" id="live-image" alt="Картинка от GyertAI">
-    <button class="btn-close-live" onclick="closeLive()">✕ Вернуться в чат</button>
 </div>
 
 <audio id="audio-player"></audio>
@@ -414,14 +376,12 @@ HTML_TEMPLATE = """
 </div>
 
 <script>
+    const APP_MODE = {{APP_MODE}};
     const chatInner = document.getElementById('chat-inner');
-    const liveOverlay = document.getElementById('live-overlay');
-    const orb = document.getElementById('orb');
-    const liveStatus = document.getElementById('live-status');
-    const liveSubtitles = document.getElementById('live-subtitles');
-    const liveImage = document.getElementById('live-image');
     const audioPlayer = document.getElementById('audio-player');
     const textInput = document.getElementById('text-input');
+    const micBtn = document.getElementById('mic-btn');
+    const voiceStatus = document.getElementById('voice-status');
 
     // Идентификатор хранится в браузере: иначе перезагрузка страницы сбрасывала бы
     // дневной лимит запросов для тех, у кого нет аккаунта.
@@ -437,7 +397,7 @@ HTML_TEMPLATE = """
         "🧭 GyertAI — команды и поддержка",
         "",
         "/draw описание — нарисовать картинку, например /draw закат над городом",
-        "🎙 Live-сфера — голосовое общение",
+        "🎙 кнопка у поля ввода — голосовое общение",
         "👤 Аккаунт — вход, подписка, промокод",
         "",
         "💬 Поддержка: @skyp_t0n — https://t.me/skyp_t0n",
@@ -529,19 +489,9 @@ HTML_TEMPLATE = """
         }
     }
 
-    function openLive() {
-        liveOverlay.classList.add('active');
-        resetLive();
-    }
-
-    function closeLive() {
-        if (isRecording && mediaRecorder) { try { mediaRecorder.stop(); } catch (e) {} }
-        isRecording = false;
-        isBusy = false;
-        stopStream();
-        audioPlayer.pause();
-        audioPlayer.removeAttribute('src');
-        liveOverlay.classList.remove('active');
+    // --- Голосовой режим без полноэкранных окон ---------------------------
+    function setVoiceStatus(text) {
+        voiceStatus.innerText = text;
     }
 
     function stopStream() {
@@ -551,33 +501,7 @@ HTML_TEMPLATE = """
         }
     }
 
-    function resetLive() {
-        setOrb('', 'Нажмите на сферу, чтобы начать говорить');
-        liveSubtitles.innerText = 'Ожидаю голосовую команду...';
-        showLiveImage(null);
-    }
-
-    function showLiveImage(url) {
-        if (url) {
-            liveImage.src = url;
-            liveImage.classList.add('show');
-        } else {
-            liveImage.classList.remove('show');
-            liveImage.removeAttribute('src');
-        }
-    }
-
-    function setOrb(state, text) {
-        orb.className = 'orb ' + state;
-        liveStatus.innerText = text;
-    }
-
-    audioPlayer.onplay = () => setOrb('speaking', 'GyertAI говорит...');
-    audioPlayer.onended = () => {
-        if (liveOverlay.classList.contains('active')) resetLive();
-    };
-
-    async function toggleRecording() {
+    async function toggleVoice() {
         if (isBusy) return;
 
         if (!isRecording) {
@@ -589,23 +513,23 @@ HTML_TEMPLATE = """
                 mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) audioChunks.push(e.data); };
                 mediaRecorder.onstop = async () => {
                     stopStream();
-                    const type = mediaRecorder.mimeType || 'audio/webm';
-                    const blob = new Blob(audioChunks, { type });
+                    const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
                     audioChunks = [];
                     await sendVoice(blob);
                 };
                 mediaRecorder.start();
                 isRecording = true;
-                setOrb('listening', 'Слушаю вас... нажмите на сферу, чтобы отправить');
+                micBtn.style.background = 'linear-gradient(135deg, #fb7185, #7f1d1d)';
+                setVoiceStatus('🎙 Слушаю… нажмите 🎙 ещё раз, чтобы отправить');
             } catch (e) {
                 stopStream();
-                liveSubtitles.innerText = 'Нет доступа к микрофону. Разрешите его в браузере.';
-                setOrb('', 'Микрофон недоступен');
+                setVoiceStatus('Нет доступа к микрофону — разрешите его в браузере.');
             }
         } else {
             isRecording = false;
             isBusy = true;
-            setOrb('thinking', 'Обрабатываю речь и готовлю ответ...');
+            micBtn.style.background = '';
+            setVoiceStatus('⏳ Обрабатываю речь и готовлю голосовой ответ…');
             try { mediaRecorder.stop(); } catch (e) {}
         }
     }
@@ -619,25 +543,18 @@ HTML_TEMPLATE = """
             const res = await fetch('/api/voice', { method: 'POST', body: fd });
             const data = await res.json();
             if (data.error) {
-                liveSubtitles.innerText = 'Ошибка: ' + data.error;
-                setOrb('', 'Сбой — нажмите на сферу и повторите');
+                setVoiceStatus('⚠️ ' + data.error);
                 return;
             }
-            liveSubtitles.innerText = data.reply;
-            showLiveImage(data.image);
+            if (data.user_text) addMessage(data.user_text, 'user');
+            addMessage(data.reply, 'ai');
             if (data.audio_url) {
                 audioPlayer.src = data.audio_url;
-                try {
-                    await audioPlayer.play();
-                } catch (e) {
-                    setOrb('', 'Ответ не воспроизвёлся — нажмите на сферу ещё раз');
-                }
-            } else {
-                setOrb('', 'Нажмите на сферу, чтобы продолжить');
+                try { await audioPlayer.play(); } catch (e) {}
             }
+            setVoiceStatus('🎙 Голосовой режим');
         } catch (e) {
-            liveSubtitles.innerText = 'Ошибка соединения: ' + e;
-            setOrb('', 'Сбой — нажмите на сферу и повторите');
+            setVoiceStatus('⚠️ Ошибка соединения: ' + e);
         } finally {
             isBusy = false;
         }
@@ -764,13 +681,63 @@ HTML_TEMPLATE = """
         accForget();
         accMsg('Вы вышли из аккаунта.');
     }
+
+    // --- Мини-приложение Telegram -----------------------------------------
+    // Внутри бота страница получает подписанный initData: по нему сайт узнаёт
+    // Telegram-пользователя и сразу выдаёт ему токен, без ввода логина и пароля.
+    async function initMiniApp() {
+        if (!APP_MODE) return;
+        document.body.classList.add('in-app');
+        const tg = window.Telegram && window.Telegram.WebApp;
+        if (!tg) return;
+        try {
+            tg.ready();
+            tg.expand();
+            tg.setHeaderColor('#0b101a');
+            tg.setBackgroundColor('#05070d');
+        } catch (e) {}
+        if (!tg.initData) return;
+        try {
+            const res = await fetch('/api/app/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ init_data: tg.initData }),
+            });
+            const data = await res.json();
+            if (!data.ok) return;
+            if (data.registered) {
+                accToken = data.token;
+                localStorage.setItem('gyert_token', accToken);
+            } else {
+                const field = document.getElementById('r-user');
+                if (field && data.username) field.value = data.username;
+            }
+        } catch (e) {}
+    }
+    initMiniApp();
 </script>
 </body>
 </html>
 """
 
+def _render_page(app_mode: bool = False) -> str:
+    """Отдаёт страницу: обычный сайт или вариант для встроенного приложения Telegram.
+
+    В режиме приложения подключается Telegram WebApp SDK, а страница получает метку
+    APP_MODE — по ней она сама авторизуется через initData и прячет внешние ссылки.
+    """
+    page = HTML_TEMPLATE.replace("{{APP_MODE}}", "true" if app_mode else "false")
+    telegram_sdk = (
+        '<script src="https://telegram.org/js/telegram-web-app.js"></script>'
+        if app_mode else ""
+    )
+    return page.replace("<!--{{TELEGRAM_SDK}}-->", telegram_sdk)
+
 @app.get("/", response_class=HTMLResponse)
-async def index(): return HTML_TEMPLATE
+async def index(): return _render_page(False)
+
+@app.get("/app", response_class=HTMLResponse)
+async def mini_app(): return _render_page(True)
 
 @app.post("/api/clear")
 async def api_clear(session_id: str = Form("default")):
@@ -793,7 +760,11 @@ async def api_chat_text(
                          "/draw кот в космическом шлеме",
                 "left": left,
             }
-        return {"reply": f"🎨 Рисую: {prompt}", "image": image_url(prompt), "left": left}
+        return {
+            "reply": f"🎨 Рисую: {prompt}",
+            "image": image_url(await enhance_image_prompt(prompt)),
+            "left": left,
+        }
     try:
         reply = await ask_gyert(session_id, text)
         return {"reply": reply, "left": left}
@@ -837,6 +808,25 @@ async def api_esp32(file: UploadFile = File(...)):
         if os.path.exists(temp_in): os.remove(temp_in)
 
 # --- Аккаунт, подписка и промокоды -------------------------------------------
+
+@app.post("/api/app/auth")
+async def api_app_auth(request: Request):
+    """Вход в мини-приложении Telegram: проверяем подпись initData и выдаём токен."""
+    data = await request.json()
+    user = accounts.telegram_user_from_init_data(data.get("init_data", ""))
+    if not user:
+        return {"ok": False, "error": "no_init_data"}
+    username = accounts.normalize_username(user.get("username") or "")
+    if not username:
+        return {"ok": False, "error": "no_username"}
+    accounts.link_telegram(username, user.get("id") or "")
+    registered = accounts.has_account(username)
+    return {
+        "ok": True,
+        "username": username,
+        "registered": registered,
+        "token": accounts.issue_token(username) if registered else "",
+    }
 
 def limit_message() -> str:
     return (
