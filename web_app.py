@@ -11,6 +11,7 @@ from ai_core import (
     speech_to_text,
     text_to_speech,
     clear_history,
+    logo_path,
 )
 import accounts
 
@@ -39,6 +40,7 @@ HTML_TEMPLATE = """
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GyertAI — независимый искусственный интеллект</title>
+<!--{{FAVICON}}-->
 <!--{{TELEGRAM_SDK}}-->
 <style>
     :root {
@@ -94,6 +96,10 @@ HTML_TEMPLATE = """
         box-shadow: 0 1px 0 rgba(34, 211, 238, 0.16), 0 18px 44px rgba(0, 0, 0, 0.42);
     }
     .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-logo {
+        height: 44px; width: auto; max-width: 130px; object-fit: contain;
+        filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.55));
+    }
     .brand-orb {
         position: relative; width: 42px; height: 42px; border-radius: 50%;
         background: radial-gradient(circle at 32% 30%, #67e8f9, #22d3ee 40%, #0369a1 100%);
@@ -203,6 +209,28 @@ HTML_TEMPLATE = """
         border-bottom-right-radius: 5px; box-shadow: 0 0 24px rgba(14, 165, 233, 0.3);
     }
     .bubble img { display: block; margin-top: 12px; max-width: 100%; border-radius: 12px; }
+    /* Голосовой ответ — проигрывается по нажатию, как голосовое в Telegram */
+    .voice {
+        display: flex; align-items: center; gap: 10px; min-width: 220px; max-width: 330px;
+    }
+    .voice-play {
+        flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; border: none;
+        cursor: pointer; background: linear-gradient(135deg, #22d3ee, #0369a1);
+        color: #04121a; font-size: 0.8rem; line-height: 1; transition: 0.2s;
+        box-shadow: 0 0 16px rgba(34, 211, 238, 0.35);
+    }
+    .voice-play:hover { filter: brightness(1.12); }
+    .voice-wave { flex: 1; display: flex; align-items: center; gap: 2px; height: 26px; }
+    .voice-wave i { flex: 1; min-width: 2px; border-radius: 2px; background: rgba(34, 211, 238, 0.28); }
+    .voice-wave i.on { background: var(--accent); }
+    .voice-time {
+        font-family: var(--mono); font-size: 0.68rem; color: var(--muted);
+        min-width: 32px; text-align: right;
+    }
+    .voice-text {
+        margin-top: 11px; padding-top: 10px; font-size: 0.88rem; line-height: 1.5;
+        color: var(--muted); border-top: 1px solid var(--border); white-space: pre-wrap;
+    }
     .typing span {
         display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%;
         background: var(--accent); opacity: 0.4; animation: blink 1.2s infinite;
@@ -224,6 +252,27 @@ HTML_TEMPLATE = """
         text-transform: uppercase; color: var(--faint);
     }
     .composer-hud b { color: var(--muted); font-weight: 600; }
+    /* Ползунок голосовых ответов */
+    .switch {
+        display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+        font-family: var(--mono); font-size: 0.62rem; letter-spacing: 1.6px;
+        text-transform: uppercase; color: var(--faint);
+    }
+    .switch input { display: none; }
+    .switch-track {
+        position: relative; flex: 0 0 34px; width: 34px; height: 18px; border-radius: 10px;
+        background: var(--panel-2); border: 1px solid var(--border); transition: 0.2s;
+    }
+    .switch-thumb {
+        position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+        border-radius: 50%; background: var(--faint); transition: 0.2s;
+    }
+    .switch input:checked + .switch-track {
+        background: linear-gradient(135deg, #22d3ee, #0369a1); border-color: transparent;
+        box-shadow: 0 0 14px rgba(34, 211, 238, 0.35);
+    }
+    .switch input:checked + .switch-track .switch-thumb { left: 18px; background: #04121a; }
+    .switch input:checked ~ .switch-label { color: var(--accent); }
     .composer-inner {
         max-width: 820px; margin: 0 auto; display: flex; gap: 10px; align-items: center;
         background: linear-gradient(180deg, rgba(18, 26, 40, 0.95), rgba(11, 16, 26, 0.95));
@@ -279,7 +328,7 @@ HTML_TEMPLATE = """
 
 <header class="topbar">
     <div class="brand">
-        <div class="brand-orb"></div>
+        <!--{{BRAND_LOGO}}-->
         <div>
             <div class="brand-name">GYERT AI</div>
             <div class="brand-tag">ИИ-ядро · экосистема Gyert</div>
@@ -306,6 +355,11 @@ HTML_TEMPLATE = """
         <span>● Система онлайн</span>
         <span><b>/draw</b> описание — картинка</span>
         <span><b>/help</b> — команды и поддержка</span>
+        <label class="switch" title="Если включено, ответ приходит голосовым сообщением">
+            <input type="checkbox" id="voice-toggle">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-label">Голосовые ответы</span>
+        </label>
         <span id="voice-status">🎙 Голосовой режим</span>
     </div>
     <div class="composer-inner">
@@ -318,8 +372,6 @@ HTML_TEMPLATE = """
         <a href="https://t.me/skyp_t0n" target="_blank" rel="noopener">@skyp_t0n</a>
     </div>
 </div>
-
-<audio id="audio-player"></audio>
 
 <div class="modal-backdrop" id="acc-modal">
     <div class="modal">
@@ -378,10 +430,10 @@ HTML_TEMPLATE = """
 <script>
     const APP_MODE = {{APP_MODE}};
     const chatInner = document.getElementById('chat-inner');
-    const audioPlayer = document.getElementById('audio-player');
     const textInput = document.getElementById('text-input');
     const micBtn = document.getElementById('mic-btn');
     const voiceStatus = document.getElementById('voice-status');
+    const voiceToggle = document.getElementById('voice-toggle');
 
     // Идентификатор хранится в браузере: иначе перезагрузка страницы сбрасывала бы
     // дневной лимит запросов для тех, у кого нет аккаунта.
@@ -392,12 +444,21 @@ HTML_TEMPLATE = """
     }
     let mediaRecorder, audioChunks = [], isRecording = false, typingRow = null;
     let mediaStream = null, isBusy = false;
+    let activeVoiceAudio = null;
+
+    // Ползунок голосовых ответов: включён — ответ приходит голосовым сообщением,
+    // а не читается вслух сразу. Настройка помнится в браузере.
+    voiceToggle.checked = localStorage.getItem('gyert_voice') === '1';
+    voiceToggle.addEventListener('change', () => {
+        localStorage.setItem('gyert_voice', voiceToggle.checked ? '1' : '0');
+    });
 
     const HELP_TEXT = [
         "🧭 GyertAI — команды и поддержка",
         "",
         "/draw описание — нарисовать картинку, например /draw закат над городом",
         "🎙 кнопка у поля ввода — голосовое общение",
+        "🔊 Голосовые ответы — ползунок над полем ввода: ответ приходит голосовым сообщением",
         "👤 Аккаунт — вход, подписка, промокод",
         "",
         "💬 Поддержка: @skyp_t0n — https://t.me/skyp_t0n",
@@ -426,6 +487,86 @@ HTML_TEMPLATE = """
             picture.onload = scrollDown;
             bubble.appendChild(picture);
         }
+        row.appendChild(avatar);
+        row.appendChild(bubble);
+        chatInner.appendChild(row);
+        scrollDown();
+    }
+
+    function fmtTime(sec) {
+        if (!isFinite(sec) || sec < 0) return '0:00';
+        const m = Math.floor(sec / 60);
+        const s = Math.floor(sec % 60);
+        return m + ':' + (s < 10 ? '0' + s : s);
+    }
+
+    // Голосовой ответ: пузырь с кнопкой ▶, волной и расшифровкой текста.
+    // Ничего не играет само — человек нажимает, как на голосовое в Telegram.
+    function renderVoice(audioUrl, text) {
+        const row = document.createElement('div');
+        row.className = 'row ai';
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar';
+        avatar.innerText = 'AI';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+
+        const player = document.createElement('div');
+        player.className = 'voice';
+
+        const playBtn = document.createElement('button');
+        playBtn.className = 'voice-play';
+        playBtn.type = 'button';
+        playBtn.innerText = '▶';
+
+        const wave = document.createElement('div');
+        wave.className = 'voice-wave';
+        const bars = [];
+        for (let i = 0; i < 26; i++) {
+            const bar = document.createElement('i');
+            bar.style.height = Math.round(25 + Math.random() * 70) + '%';
+            wave.appendChild(bar);
+            bars.push(bar);
+        }
+
+        const time = document.createElement('span');
+        time.className = 'voice-time';
+        time.innerText = '0:00';
+
+        player.appendChild(playBtn);
+        player.appendChild(wave);
+        player.appendChild(time);
+        bubble.appendChild(player);
+
+        if (text) {
+            const caption = document.createElement('div');
+            caption.className = 'voice-text';
+            caption.innerText = text;
+            bubble.appendChild(caption);
+        }
+
+        const audio = new Audio(audioUrl);
+        const paint = () => {
+            const ratio = audio.duration ? audio.currentTime / audio.duration : 0;
+            const lit = Math.round(ratio * bars.length);
+            bars.forEach((b, i) => b.classList.toggle('on', i < lit));
+        };
+        playBtn.onclick = () => {
+            // Одновременно звучит только одно голосовое — как в мессенджере.
+            if (activeVoiceAudio && activeVoiceAudio !== audio) activeVoiceAudio.pause();
+            if (audio.paused) { activeVoiceAudio = audio; audio.play().catch(() => {}); }
+            else { audio.pause(); }
+        };
+        audio.onplay = () => { playBtn.innerText = '⏸'; };
+        audio.onpause = () => { playBtn.innerText = '▶'; };
+        audio.ontimeupdate = () => { time.innerText = fmtTime(audio.currentTime); paint(); };
+        audio.onloadedmetadata = () => { time.innerText = fmtTime(audio.duration); paint(); };
+        audio.onended = () => {
+            audio.currentTime = 0;
+            time.innerText = fmtTime(audio.duration);
+            paint();
+        };
+
         row.appendChild(avatar);
         row.appendChild(bubble);
         chatInner.appendChild(row);
@@ -475,11 +616,19 @@ HTML_TEMPLATE = """
         fd.append('text', text);
         fd.append('session_id', sessionId);
         fd.append('token', accToken);
+        fd.append('voice', voiceToggle.checked ? '1' : '0');
         try {
             const res = await fetch('/api/chat_text', { method: 'POST', body: fd });
             const data = await res.json();
             hideTyping();
-            addMessage(data.reply || ("Ошибка: " + (data.error || "нет ответа")), 'ai', data.image);
+            if (data.error) {
+                addMessage("Ошибка: " + data.error, 'ai');
+            } else if (data.audio_url) {
+                // Ползунок включён: ответ пришёл голосовым сообщением.
+                renderVoice(data.audio_url, data.reply);
+            } else {
+                addMessage(data.reply || "Нет ответа", 'ai', data.image);
+            }
         } catch (e) {
             hideTyping();
             addMessage("Ошибка соединения: " + e, 'ai');
@@ -547,10 +696,12 @@ HTML_TEMPLATE = """
                 return;
             }
             if (data.user_text) addMessage(data.user_text, 'user');
-            addMessage(data.reply, 'ai');
+            // Голосовой ввод — и ответ голосовым сообщением: не читаем вслух сразу,
+            // а отдаём пузырём, который человек включает сам.
             if (data.audio_url) {
-                audioPlayer.src = data.audio_url;
-                try { await audioPlayer.play(); } catch (e) {}
+                renderVoice(data.audio_url, data.reply);
+            } else {
+                addMessage(data.reply, 'ai');
             }
             setVoiceStatus('🎙 Голосовой режим');
         } catch (e) {
@@ -725,13 +876,31 @@ def _render_page(app_mode: bool = False) -> str:
 
     В режиме приложения подключается Telegram WebApp SDK, а страница получает метку
     APP_MODE — по ней она сама авторизуется через initData и прячет внешние ссылки.
+    Логотип подставляется только если файл assets/logo.png на месте, иначе остаётся
+    прежний светящийся круг.
     """
     page = HTML_TEMPLATE.replace("{{APP_MODE}}", "true" if app_mode else "false")
     telegram_sdk = (
         '<script src="https://telegram.org/js/telegram-web-app.js"></script>'
         if app_mode else ""
     )
-    return page.replace("<!--{{TELEGRAM_SDK}}-->", telegram_sdk)
+    page = page.replace("<!--{{TELEGRAM_SDK}}-->", telegram_sdk)
+    if os.path.exists(logo_path()):
+        favicon = '<link rel="icon" type="image/png" href="/logo.png">'
+        brand_logo = '<img class="brand-logo" src="/logo.png" alt="GyertAI">'
+    else:
+        favicon = ""
+        brand_logo = '<div class="brand-orb"></div>'
+    page = page.replace("<!--{{FAVICON}}-->", favicon)
+    return page.replace("<!--{{BRAND_LOGO}}-->", brand_logo)
+
+@app.get("/logo.png")
+async def logo():
+    """Логотип GyertAI: тот же файл, что используется в боте и в десктопе."""
+    path = logo_path()
+    if not os.path.exists(path):
+        return JSONResponse(status_code=404, content={"error": "no_logo"})
+    return FileResponse(path, media_type="image/png")
 
 @app.get("/", response_class=HTMLResponse)
 async def index(): return _render_page(False)
@@ -746,7 +915,8 @@ async def api_clear(session_id: str = Form("default")):
 
 @app.post("/api/chat_text")
 async def api_chat_text(
-    text: str = Form(...), session_id: str = Form("default"), token: str = Form("")
+    text: str = Form(...), session_id: str = Form("default"),
+    token: str = Form(""), voice: str = Form("0"),
 ):
     identity = accounts.resolve_identity(accounts.username_by_token(token), session_id)
     allowed, left = accounts.consume_request(identity)
@@ -767,7 +937,13 @@ async def api_chat_text(
         }
     try:
         reply = await ask_gyert(session_id, text)
-        return {"reply": reply, "left": left}
+        result = {"reply": reply, "left": left}
+        # Ползунок голосовых ответов включён: ответ отдаём голосовым, без автоплея.
+        if voice == "1":
+            audio_filename = f"{uuid.uuid4()}.mp3"
+            await text_to_speech(reply, os.path.join("temp_audio", audio_filename))
+            result["audio_url"] = f"/audio/{audio_filename}"
+        return result
     except Exception as e: return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/voice")

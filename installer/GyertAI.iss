@@ -7,6 +7,10 @@
 #define AppPublisher "Gyert Etc."
 #define AppExeName "GyertAI.exe"
 
+; Значок установщика: его делает PyInstaller из assets\logo.png (файл assets\logo.ico).
+; Пока логотипа нет — сборка идёт со значком по умолчанию.
+#define LogoIcon "..\assets\logo.ico"
+
 [Setup]
 AppId={{8F3C1E2A-4B77-4C1E-9E3D-0A6B5C7D9F21}
 AppName={#AppName}
@@ -25,6 +29,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
+#if FileExists(AddBackslash(SourcePath) + "..\assets\logo.ico")
+SetupIconFile={#LogoIcon}
+#endif
 
 ; Выбор языка интерфейса установщика на первом экране
 [Languages]

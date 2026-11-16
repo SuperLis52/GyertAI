@@ -16,6 +16,29 @@ for _extra in ('edge_tts', 'gtts'):
 if os.path.exists('.env'):
     datas.append(('.env', '.'))
 
+# Логотип: PNG с прозрачным фоном из assets попадает в сборку, а из него делается
+# .ico — он становится значком самой программы и установщика.
+if os.path.exists('assets'):
+    datas.append(('assets', 'assets'))
+
+ICON = None
+if os.path.exists('assets/logo.png'):
+    ICON = 'assets/logo.ico'
+    if not os.path.exists(ICON):
+        try:
+            from PIL import Image
+            logo = Image.open('assets/logo.png').convert('RGBA')
+            # Значки Windows квадратные: логотип вписываем по центру прозрачного квадрата.
+            side = max(logo.size)
+            canvas = Image.new('RGBA', (side, side), (0, 0, 0, 0))
+            canvas.paste(logo, ((side - logo.width) // 2, (side - logo.height) // 2))
+            canvas.save(
+                ICON, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+            )
+        except Exception as e:
+            print('Не удалось сделать значок из логотипа:', e)
+            ICON = None
+
 
 a = Analysis(
     ['desktop_app.py'],
@@ -50,6 +73,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON,
 )
 
 coll = COLLECT(

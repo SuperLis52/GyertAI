@@ -33,6 +33,13 @@ ENV_PATH = next((p for p in _env_candidates() if p.exists()), None)
 # encoding="utf-8-sig" — чтобы файл с BOM (как сохраняет Блокнот/PowerShell) тоже читался.
 load_dotenv(ENV_PATH, encoding="utf-8-sig")
 
+# Логотип GyertAI: один файл assets/logo.png (PNG с прозрачным фоном) используется
+# и на сайте, и в приложении Telegram, и в десктопе. Если файла нет, всё работает
+# по-старому — значки просто не показываются.
+def logo_path() -> str:
+    base = getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent
+    return os.path.join(base, "assets", "logo.png")
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 CURRENT_MODEL = "qwen/qwen3.8-27b"
 

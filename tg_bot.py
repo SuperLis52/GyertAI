@@ -17,6 +17,7 @@ from ai_core import (
     CONFERENCE_TRIGGER,
     CONFERENCE_SPEECH,
     CONFERENCE_LEGAL,
+    logo_path,
 )
 import accounts
 
@@ -92,7 +93,7 @@ async def check_limit(message: types.Message) -> bool:
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     remember_user(message)
-    await message.answer(
+    text = (
         "👋 Приветствую! Я <b>GyertAI</b> — интеллектуальное ядро экосистемы Gyert "
         "и умной станции <b>GyertStation</b>.\n\n"
         "Пиши мне любые задачи или отправляй голосовые сообщения — я отвечу голосом "
@@ -100,10 +101,22 @@ async def cmd_start(message: types.Message):
         f"Без подписки доступно {accounts.FREE_DAILY_LIMIT} запросов в день. "
         "Создать аккаунт, активировать промокод или оформить подписку — по команде "
         "/account. Все команды и контакт поддержки — в /help.\n\n"
-        "🚀 Полный интерфейс — в приложении внутри бота: кнопка ниже или /app.",
-        parse_mode="HTML",
-        reply_markup=get_main_keyboard()
+        "🚀 Полный интерфейс — в приложении внутри бота: кнопка ниже или /app."
     )
+    logo = logo_path()
+    if os.path.exists(logo):
+        # Логотип приходит вместе с приветствием: тот же файл, что на сайте и в десктопе.
+        try:
+            await message.answer_photo(
+                types.FSInputFile(logo),
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=get_main_keyboard(),
+            )
+            return
+        except Exception as e:
+            print("Не удалось отправить логотип:", e)
+    await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
