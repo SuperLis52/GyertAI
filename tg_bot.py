@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 from ai_core import (
-    ask_gyert_rich,
+    ask_gyert,
     generate_image,
     speech_to_text,
     text_to_speech,
@@ -31,6 +31,10 @@ AWAITING = {}
 
 # Бот подтверждений: только он присылает коды для входа в аккаунт.
 VERIFY_BOT_URL = "https://t.me/gyert_verification_bot"
+
+# Контакт поддержки GyertAI: показывается по команде /help.
+SUPPORT_URL = "https://t.me/skyp_t0n"
+SUPPORT_HANDLE = "@skyp_t0n"
 
 def get_main_keyboard():
     builder = InlineKeyboardBuilder()
@@ -83,10 +87,39 @@ async def cmd_start(message: types.Message):
         "в стиле Джарвиса!\n\n"
         f"Без подписки доступно {accounts.FREE_DAILY_LIMIT} запросов в день. "
         "Создать аккаунт, активировать промокод или оформить подписку — по команде "
-        "/account.",
+        "/account. Все команды и контакт поддержки — в /help.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    remember_user(message)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"🆘 Поддержка: {SUPPORT_HANDLE}", url=SUPPORT_URL)
+    builder.button(text="👤 Аккаунт и подписка", callback_data="help_account")
+    builder.adjust(1)
+    await message.answer(
+        "🧭 <b>GyertAI — команды и поддержка</b>\n\n"
+        "/start — приветствие и знакомство\n"
+        "/draw <i>описание</i> — нарисовать картинку, например "
+        "<code>/draw кот в космическом шлеме</code>\n"
+        "/tts <i>текст</i> — озвучить текст голосом Джарвиса\n"
+        "/account — аккаунт, подписка, промокоды\n"
+        "/help — эта справка\n\n"
+        "Можно писать обычным текстом или отправлять голосовые — я отвечу голосом.\n\n"
+        f"💬 <b>Поддержка:</b> <a href=\"{SUPPORT_URL}\">{SUPPORT_HANDLE}</a>\n"
+        "Пишите туда, если не приходит код подтверждения, не активируется подписка "
+        "или возникла любая ошибка.",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=builder.as_markup(),
+    )
+
+@dp.callback_query(F.data == "help_account")
+async def cb_help_account(callback: types.CallbackQuery):
+    await callback.answer()
+    await show_account(callback)
 
 @dp.callback_query(F.data == "clear_mem")
 async def cb_clear(callback: types.CallbackQuery):
@@ -384,7 +417,7 @@ async def cmd_tts(message: types.Message):
         if os.path.exists(out_mp3):
             os.remove(out_mp3)
 
-# /image <описание> — нарисовать картинку и прислать её в чат
+# /draw <описание> — нарисовать картинку и прислать её в чат
 async def send_generated_image(message: types.Message, prompt: str, caption: str = None):
     os.makedirs("temp_audio", exist_ok=True)
     out_jpg = os.path.join("temp_audio", f"img_{uuid.uuid4()}.jpg")
@@ -403,13 +436,13 @@ async def send_generated_image(message: types.Message, prompt: str, caption: str
         if os.path.exists(out_jpg):
             os.remove(out_jpg)
 
-@dp.message(Command("image"))
-async def cmd_image(message: types.Message):
+@dp.message(Command("draw"))
+async def cmd_draw(message: types.Message):
     prompt = (message.text or "").partition(" ")[2].strip()
     if not prompt:
         await message.answer(
             "Опишите картинку после команды, например:\n"
-            "<code>/image кот в космическом шлеме</code>",
+            "<code>/draw кот в космическом шлеме</code>",
             parse_mode="HTML",
         )
         return
@@ -424,8 +457,7 @@ async def handle_text(message: types.Message):
     chat_id = message.chat.id
     await bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        result = await ask_gyert_rich(f"tg_{chat_id}", message.text)
-        reply = result["reply"]
+        reply = await ask_gyert(f"tg_{chat_id}", message.text)
         await message.answer(reply, reply_markup=get_main_keyboard())
     except Exception as e:
         await message.answer(f"⚠️ Ошибка ядра: {e}")
@@ -444,10 +476,6 @@ async def handle_text(message: types.Message):
         if os.path.exists(out_mp3):
             os.remove(out_mp3)
 
-    # Картинку отправляем последней, чтобы она не задерживала голосовой ответ
-    if result["image_prompt"]:
-        await send_generated_image(message, result["image_prompt"])
-
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     if not await check_limit(message):
@@ -457,13 +485,11 @@ async def handle_voice(message: types.Message):
     os.makedirs("temp_audio", exist_ok=True)
     in_ogg = os.path.join("temp_audio", f"in_{uuid.uuid4()}.ogg")
     out_mp3 = os.path.join("temp_audio", f"out_{uuid.uuid4()}.mp3")
-    result = None
 
     try:
         await bot.download(file=message.voice.file_id, destination=in_ogg)
         user_text = await speech_to_text(in_ogg)
-        result = await ask_gyert_rich(f"tg_{chat_id}", user_text)
-        reply = result["reply"]
+        reply = await ask_gyert(f"tg_{chat_id}", user_text)
 
         await message.answer(
             f"🤖 <b>GyertAI:</b> {html.escape(reply)}",
@@ -481,10 +507,6 @@ async def handle_voice(message: types.Message):
             if os.path.exists(f):
                 os.remove(f)
 
-    # Картинку отправляем последней, чтобы она не задерживала голосовой ответ
-    if result and result["image_prompt"]:
-        await send_generated_image(message, result["image_prompt"])
-
 async def handle_web(request):
     return web.Response(text="GyertAI Telegram Bot is Live!")
 
@@ -499,6 +521,17 @@ async def start_web_server():
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
+    # Меню команд в Telegram: их видно по кнопке «/» и в справке /help
+    try:
+        await bot.set_my_commands([
+            types.BotCommand(command="start", description="Приветствие"),
+            types.BotCommand(command="draw", description="Нарисовать картинку"),
+            types.BotCommand(command="tts", description="Озвучить текст"),
+            types.BotCommand(command="account", description="Аккаунт и подписка"),
+            types.BotCommand(command="help", description="Команды и поддержка"),
+        ])
+    except Exception as e:
+        print("Не удалось обновить меню команд:", e)
     asyncio.create_task(start_web_server())
     print("🤖 Telegram-бот GyertAI успешно запущен!")
     await dp.start_polling(bot, skip_updates=True)

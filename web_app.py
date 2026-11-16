@@ -4,12 +4,26 @@ import asyncio
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from ai_core import ask_gyert, ask_gyert_rich, image_url, speech_to_text, text_to_speech, clear_history
+from ai_core import ask_gyert, image_url, speech_to_text, text_to_speech, clear_history
 import accounts
 
 app = FastAPI(title="GyertAI — Web & Station OS")
 os.makedirs("temp_audio", exist_ok=True)
 app.mount("/audio", StaticFiles(directory="temp_audio"), name="audio")
+
+# Контакт поддержки: показывается в справке на сайте.
+SUPPORT_URL = "https://t.me/skyp_t0n"
+SUPPORT_HANDLE = "@skyp_t0n"
+
+# Рисование картинок доступно только по команде /draw — как и в Telegram-боте.
+DRAW_COMMAND = "/draw"
+
+def draw_prompt(text: str):
+    """Возвращает описание картинки, если человек ввёл /draw, иначе None."""
+    stripped = (text or "").strip()
+    if stripped.lower().startswith(DRAW_COMMAND):
+        return stripped[len(DRAW_COMMAND):].strip(" :,-—")
+    return None
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -26,9 +40,12 @@ HTML_TEMPLATE = """
         --border: #1e293b;
         --accent: #22d3ee;
         --accent-2: #0ea5e9;
+        --accent-3: #0369a1;
         --text: #e6edf7;
         --muted: #7b8aa3;
+        --faint: #3f4b60;
         --user: #0ea5e9;
+        --mono: "Consolas", "JetBrains Mono", "Courier New", ui-monospace, monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
@@ -37,38 +54,78 @@ HTML_TEMPLATE = """
         font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
         display: flex; flex-direction: column; overflow: hidden;
     }
+    /* Фон: свечения, техносетка и бегущая линия сканирования */
     .bg-glow {
         position: fixed; inset: 0; pointer-events: none; z-index: 0;
         background:
-            radial-gradient(600px 300px at 15% -5%, rgba(34, 211, 238, 0.12), transparent 70%),
-            radial-gradient(700px 350px at 90% 0%, rgba(14, 165, 233, 0.10), transparent 70%);
+            radial-gradient(620px 320px at 15% -5%, rgba(34, 211, 238, 0.16), transparent 70%),
+            radial-gradient(720px 360px at 92% 0%, rgba(14, 165, 233, 0.13), transparent 70%),
+            radial-gradient(900px 520px at 50% 118%, rgba(168, 85, 247, 0.10), transparent 70%);
+    }
+    .bg-grid {
+        position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: 0.55;
+        background-image:
+            linear-gradient(rgba(34, 211, 238, 0.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(34, 211, 238, 0.06) 1px, transparent 1px);
+        background-size: 46px 46px;
+        -webkit-mask-image: radial-gradient(circle at 50% 32%, #000 18%, transparent 78%);
+        mask-image: radial-gradient(circle at 50% 32%, #000 18%, transparent 78%);
+    }
+    .bg-scan {
+        position: fixed; left: 0; right: 0; height: 150px; z-index: 0; pointer-events: none;
+        background: linear-gradient(180deg, transparent, rgba(34, 211, 238, 0.055), transparent);
+        animation: scan 11s linear infinite;
     }
 
     /* Шапка */
     .topbar {
         position: relative; z-index: 2;
         display: flex; align-items: center; justify-content: space-between; gap: 16px;
-        padding: 14px 26px; background: rgba(11, 16, 26, 0.85);
-        border-bottom: 1px solid var(--border); backdrop-filter: blur(12px);
+        padding: 14px 26px; background: rgba(11, 16, 26, 0.86);
+        border-bottom: 1px solid var(--border); backdrop-filter: blur(14px);
+        box-shadow: 0 1px 0 rgba(34, 211, 238, 0.16), 0 18px 44px rgba(0, 0, 0, 0.42);
     }
-    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand { display: flex; align-items: center; gap: 14px; }
     .brand-orb {
-        width: 40px; height: 40px; border-radius: 50%;
+        position: relative; width: 42px; height: 42px; border-radius: 50%;
         background: radial-gradient(circle at 32% 30%, #67e8f9, #22d3ee 40%, #0369a1 100%);
-        box-shadow: 0 0 22px rgba(34, 211, 238, 0.55);
+        box-shadow: 0 0 24px rgba(34, 211, 238, 0.6), inset 0 0 14px rgba(4, 18, 26, 0.5);
         animation: breathe 4s ease-in-out infinite;
     }
-    .brand-name { font-size: 1.15rem; font-weight: 700; letter-spacing: 2px; color: var(--accent); }
-    .brand-tag { font-size: 0.72rem; color: var(--muted); letter-spacing: 0.4px; }
-    .top-btns { display: flex; gap: 10px; }
+    .brand-orb::after {
+        content: ""; position: absolute; inset: -7px; border-radius: 50%;
+        border: 1px solid rgba(34, 211, 238, 0.35);
+        animation: breathe 4s ease-in-out infinite;
+    }
+    .brand-name {
+        font-family: var(--mono); font-size: 1.2rem; font-weight: 700;
+        letter-spacing: 4px; color: var(--accent);
+        text-shadow: 0 0 18px rgba(34, 211, 238, 0.55);
+    }
+    .brand-tag {
+        font-family: var(--mono); font-size: 0.63rem; color: var(--muted);
+        letter-spacing: 2.4px; text-transform: uppercase; margin-top: 3px;
+    }
+    .top-btns { display: flex; gap: 10px; align-items: center; }
     .btn {
         border: none; cursor: pointer; border-radius: 22px; padding: 10px 18px;
         font-size: 0.86rem; font-weight: 600; font-family: inherit; transition: 0.2s;
+        text-decoration: none; display: inline-block; white-space: nowrap;
     }
-    .btn-live { background: linear-gradient(135deg, #22d3ee, #0369a1); color: #04121a; }
-    .btn-live:hover { filter: brightness(1.12); }
-    .btn-clear { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
-    .btn-clear:hover { color: var(--text); }
+    .btn-live {
+        background: linear-gradient(135deg, #22d3ee, #0369a1); color: #04121a;
+        box-shadow: 0 0 22px rgba(34, 211, 238, 0.35);
+    }
+    .btn-live:hover { filter: brightness(1.12); box-shadow: 0 0 30px rgba(34, 211, 238, 0.55); }
+    .btn-clear {
+        background: linear-gradient(180deg, rgba(18, 26, 40, 0.95), rgba(11, 16, 26, 0.95));
+        color: var(--muted); border: 1px solid var(--border);
+    }
+    .btn-clear:hover { color: var(--accent); border-color: rgba(34, 211, 238, 0.45); }
+    .btn-help {
+        font-family: var(--mono); font-size: 0.72rem; letter-spacing: 1.4px;
+        text-transform: uppercase; padding: 10px 16px;
+    }
 
     /* Окно аккаунта */
     .modal-backdrop {
@@ -119,19 +176,23 @@ HTML_TEMPLATE = """
         display: flex; align-items: center; justify-content: center;
         font-size: 0.68rem; font-weight: 700; letter-spacing: 0.5px;
     }
-    .row.ai .avatar { background: radial-gradient(circle at 32% 30%, #67e8f9, #0ea5e9 70%); color: #04121a; }
+    .row.ai .avatar {
+        background: radial-gradient(circle at 32% 30%, #67e8f9, #0ea5e9 70%); color: #04121a;
+        box-shadow: 0 0 16px rgba(34, 211, 238, 0.45);
+    }
     .row.user .avatar { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
     .bubble {
         max-width: 76%; padding: 13px 17px; border-radius: 16px; line-height: 1.55;
         font-size: 0.96rem; white-space: pre-wrap; word-break: break-word;
     }
     .row.ai .bubble {
-        background: var(--panel); border: 1px solid var(--border);
-        border-bottom-left-radius: 5px;
+        background: linear-gradient(180deg, rgba(17, 24, 39, 0.92), rgba(11, 16, 26, 0.94));
+        border: 1px solid var(--border); border-left: 2px solid rgba(34, 211, 238, 0.55);
+        border-bottom-left-radius: 5px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
     }
     .row.user .bubble {
         background: linear-gradient(135deg, #0ea5e9, #0369a1); color: #f0f9ff;
-        border-bottom-right-radius: 5px;
+        border-bottom-right-radius: 5px; box-shadow: 0 0 24px rgba(14, 165, 233, 0.3);
     }
     .bubble img { display: block; margin-top: 12px; max-width: 100%; border-radius: 12px; }
     .live-image {
@@ -149,15 +210,27 @@ HTML_TEMPLATE = """
     /* Панель ввода */
     .composer {
         position: relative; z-index: 2;
-        padding: 14px 20px 16px; background: rgba(11, 16, 26, 0.9);
-        border-top: 1px solid var(--border); backdrop-filter: blur(12px);
+        padding: 12px 20px 14px; background: rgba(11, 16, 26, 0.92);
+        border-top: 1px solid var(--border); backdrop-filter: blur(14px);
+        box-shadow: 0 -1px 0 rgba(34, 211, 238, 0.14);
     }
+    .composer-hud {
+        max-width: 820px; margin: 0 auto 9px; display: flex; gap: 16px;
+        flex-wrap: wrap; justify-content: center;
+        font-family: var(--mono); font-size: 0.62rem; letter-spacing: 1.6px;
+        text-transform: uppercase; color: var(--faint);
+    }
+    .composer-hud b { color: var(--muted); font-weight: 600; }
     .composer-inner {
         max-width: 820px; margin: 0 auto; display: flex; gap: 10px; align-items: center;
-        background: var(--panel-2); border: 1px solid var(--border); border-radius: 26px;
-        padding: 6px 6px 6px 20px;
+        background: linear-gradient(180deg, rgba(18, 26, 40, 0.95), rgba(11, 16, 26, 0.95));
+        border: 1px solid var(--border); border-radius: 26px; padding: 6px 6px 6px 20px;
+        box-shadow: inset 0 0 22px rgba(34, 211, 238, 0.05);
     }
-    .composer-inner:focus-within { border-color: rgba(34, 211, 238, 0.5); box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.08); }
+    .composer-inner:focus-within {
+        border-color: rgba(34, 211, 238, 0.5);
+        box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.09), inset 0 0 24px rgba(34, 211, 238, 0.08);
+    }
     #text-input {
         flex: 1; background: transparent; border: none; outline: none;
         color: var(--text); font-size: 0.98rem; font-family: inherit; padding: 10px 0;
@@ -167,9 +240,16 @@ HTML_TEMPLATE = """
         flex: 0 0 42px; width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer;
         background: linear-gradient(135deg, #22d3ee, #0369a1); color: #04121a;
         font-size: 1rem; font-weight: 700; transition: 0.2s;
+        box-shadow: 0 0 18px rgba(34, 211, 238, 0.35);
     }
-    .icon-btn:hover { filter: brightness(1.12); }
-    .authors { max-width: 820px; margin: 10px auto 0; text-align: center; font-size: 0.7rem; color: #3f4b60; letter-spacing: 0.5px; }
+    .icon-btn:hover { filter: brightness(1.12); box-shadow: 0 0 26px rgba(34, 211, 238, 0.55); }
+    .authors {
+        max-width: 820px; margin: 9px auto 0; text-align: center;
+        font-family: var(--mono); font-size: 0.62rem; color: var(--faint);
+        letter-spacing: 1.5px; text-transform: uppercase;
+    }
+    .authors a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--faint); }
+    .authors a:hover { color: var(--accent); border-color: var(--accent); }
 
     /* Полноэкранный Live-режим */
     .live-overlay {
@@ -206,10 +286,12 @@ HTML_TEMPLATE = """
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     @keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    @keyframes scan { from { top: -160px; } to { top: 100%; } }
 
     @media (max-width: 620px) {
         .topbar { padding: 12px 14px; }
         .brand-tag { display: none; }
+        .btn-help { display: none; }
         .bubble { max-width: 84%; }
         .chat-area { padding: 18px 12px 8px; }
     }
@@ -217,19 +299,22 @@ HTML_TEMPLATE = """
 </head>
 <body>
 <div class="bg-glow"></div>
+<div class="bg-grid"></div>
+<div class="bg-scan"></div>
 
 <header class="topbar">
     <div class="brand">
         <div class="brand-orb"></div>
         <div>
             <div class="brand-name">GYERT AI</div>
-            <div class="brand-tag">Независимый искусственный интеллект</div>
+            <div class="brand-tag">ИИ-ядро · экосистема Gyert</div>
         </div>
     </div>
     <div class="top-btns">
         <button class="btn btn-clear" onclick="openAccount()">👤 Аккаунт</button>
         <button class="btn btn-clear" onclick="clearChat()">🧹 Очистить</button>
         <button class="btn btn-live" onclick="openLive()">🎙 Live-сфера</button>
+        <a class="btn btn-clear btn-help" href="https://t.me/skyp_t0n" target="_blank" rel="noopener">🆘 Support</a>
     </div>
 </header>
 
@@ -237,17 +322,25 @@ HTML_TEMPLATE = """
     <div class="chat-inner" id="chat-inner">
         <div class="row ai">
             <div class="avatar">AI</div>
-            <div class="bubble">Привет! Я GyertAI. Задай любой вопрос текстом или включи <b>Live-сферу</b> в правом верхнем углу для голосового общения.</div>
+            <div class="bubble">Привет! Я GyertAI. Задайте любой вопрос текстом, включите <b>Live-сферу</b> в правом верхнем углу для голосового общения или нарисуйте картинку командой <b>/draw</b>.</div>
         </div>
     </div>
 </main>
 
 <div class="composer">
+    <div class="composer-hud">
+        <span>● Система онлайн</span>
+        <span><b>/draw</b> описание — картинка</span>
+        <span><b>/help</b> — команды и поддержка</span>
+    </div>
     <div class="composer-inner">
-        <input type="text" id="text-input" placeholder="Напишите сообщение для GyertAI..." onkeypress="if(event.key==='Enter') sendText()">
+        <input type="text" id="text-input" placeholder="Напишите сообщение или команду /draw..." onkeypress="if(event.key==='Enter') sendText()">
         <button class="icon-btn" onclick="sendText()">➤</button>
     </div>
-    <div class="authors">Елисей Замотаев · Никита Бойковский · Gyert Ecosystem</div>
+    <div class="authors">
+        GYERT ETC. · GYERT ECOSYSTEM · ПОДДЕРЖКА
+        <a href="https://t.me/skyp_t0n" target="_blank" rel="noopener">@skyp_t0n</a>
+    </div>
 </div>
 
 <div class="live-overlay" id="live-overlay">
@@ -340,6 +433,17 @@ HTML_TEMPLATE = """
     let mediaRecorder, audioChunks = [], isRecording = false, typingRow = null;
     let mediaStream = null, isBusy = false;
 
+    const HELP_TEXT = [
+        "🧭 GyertAI — команды и поддержка",
+        "",
+        "/draw описание — нарисовать картинку, например /draw закат над городом",
+        "🎙 Live-сфера — голосовое общение",
+        "👤 Аккаунт — вход, подписка, промокод",
+        "",
+        "💬 Поддержка: @skyp_t0n — https://t.me/skyp_t0n",
+        "Пишите туда, если не приходит код подтверждения или не активируется подписка.",
+    ].join(String.fromCharCode(10));
+
     function scrollDown() {
         const area = document.getElementById('chat-box');
         area.scrollTop = area.scrollHeight;
@@ -399,6 +503,11 @@ HTML_TEMPLATE = """
         if (!text) return;
         textInput.value = '';
         addMessage(text, 'user');
+        // /help — локальная справка, запрос к ядру и лимит не расходуются
+        if (text.toLowerCase() === '/help') {
+            addMessage(HELP_TEXT, 'ai');
+            return;
+        }
         showTyping();
         setInputEnabled(false);
 
@@ -676,13 +785,18 @@ async def api_chat_text(
     allowed, left = accounts.consume_request(identity)
     if not allowed:
         return JSONResponse(status_code=429, content={"error": limit_message()})
+    prompt = draw_prompt(text)
+    if prompt is not None:
+        if not prompt:
+            return {
+                "reply": "Опишите картинку после команды, например: "
+                         "/draw кот в космическом шлеме",
+                "left": left,
+            }
+        return {"reply": f"🎨 Рисую: {prompt}", "image": image_url(prompt), "left": left}
     try:
-        result = await ask_gyert_rich(session_id, text)
-        return {
-            "reply": result["reply"],
-            "image": image_url(result["image_prompt"]) if result["image_prompt"] else None,
-            "left": left,
-        }
+        reply = await ask_gyert(session_id, text)
+        return {"reply": reply, "left": left}
     except Exception as e: return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/voice")
@@ -697,14 +811,12 @@ async def api_voice(
     try:
         with open(temp_in, "wb") as f: f.write(await file.read())
         user_text = await speech_to_text(temp_in)
-        result = await ask_gyert_rich(session_id, user_text)
-        reply = result["reply"]
+        reply = await ask_gyert(session_id, user_text)
         audio_filename = f"{uuid.uuid4()}.mp3"
         await text_to_speech(reply, os.path.join("temp_audio", audio_filename))
         return {
             "user_text": user_text,
             "reply": reply,
-            "image": image_url(result["image_prompt"]) if result["image_prompt"] else None,
             "audio_url": f"/audio/{audio_filename}",
             "left": left,
         }
